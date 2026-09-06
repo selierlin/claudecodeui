@@ -35,7 +35,6 @@ type ChatMessagesPaneProps = {
   hasActivityIndicator?: boolean;
   chatMessages: ChatMessage[];
   selectedSession: ProjectSession | null;
-  currentSessionId: string | null;
   provider: LLMProvider;
   setProvider: (provider: LLMProvider) => void;
   textareaRef: RefObject<HTMLTextAreaElement>;
@@ -87,7 +86,6 @@ function ChatMessagesPane({
   hasActivityIndicator = false,
   chatMessages,
   selectedSession,
-  currentSessionId,
   provider,
   setProvider,
   textareaRef,
@@ -181,7 +179,6 @@ function ChatMessagesPane({
       ) : chatMessages.length === 0 ? (
         <ProviderSelectionEmptyState
           selectedSession={selectedSession}
-          currentSessionId={currentSessionId}
           provider={provider}
           setProvider={setProvider}
           textareaRef={textareaRef}

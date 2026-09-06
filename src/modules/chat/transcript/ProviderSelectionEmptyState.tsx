@@ -54,7 +54,6 @@ function modelSearchFilter(value: string, search: string): number {
 
 type ProviderSelectionEmptyStateProps = {
   selectedSession: ProjectSession | null;
-  currentSessionId: string | null;
   provider: LLMProvider;
   setProvider: (next: LLMProvider) => void;
   textareaRef: React.RefObject<HTMLTextAreaElement>;
@@ -111,7 +110,6 @@ function getProviderDisplayName(p: LLMProvider) {
  */
 export default function ProviderSelectionEmptyState({
   selectedSession,
-  currentSessionId,
   provider,
   setProvider,
   textareaRef,
@@ -182,7 +180,7 @@ export default function ProviderSelectionEmptyState({
     setDialogOpen(true);
   };
 
-  if (!selectedSession && !currentSessionId) {
+  if (!selectedSession) {
     return (
       <div className="flex h-full items-center justify-center px-4">
         <div className="w-full max-w-[34.25rem]">

@@ -247,36 +247,20 @@ export function useChatSessionState({
 
   const createDiff = useMemo<DiffCalculator>(() => createCachedDiffCalculator(), []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const trigger = newSessionTrigger ?? 0;
     if (trigger === previousNewSessionTriggerRef.current) {
       return;
     }
     previousNewSessionTriggerRef.current = trigger;
 
-    /**
-     * Consumer-side reset for explicit New Session intent.
-     *
-     * Why this is essential:
-     * - Chat keeps local state that is not fully derived from `selectedSession`:
-     *   `currentSessionId`, `pendingUserMessage`, streaming/status flags, message
-     *   pagination/scroll bookkeeping, and provider-specific sessionStorage keys.
-     * - If the user clicks New Session while already on the same route with no
-     *   selected session, parent state updates can be idempotent and this local
-     *   state would otherwise persist, making the click appear to "do nothing".
-     *
-     * What this reset guarantees:
-     * - A deterministic clean draft state on every New Session click.
-     * - No dependence on route/tab/session-object identity changes.
-     * - No coupling to unrelated external update signals.
-     */
     resetStreamingState();
     setCurrentSessionId(null);
     setPendingUserMessage(null);
     messagesOffsetRef.current = 0;
     setHasMoreMessages(false);
     setTotalMessages(0);
-    
+
     setTokenBudget(null);
     setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
     setAllMessagesLoaded(false);

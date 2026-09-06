@@ -177,7 +177,7 @@ export default function SidebarProjectSessions({
             </button>
           )}
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
             className={isManaging ? 'col-span-2 h-8 text-xs' : 'h-8 text-xs'}
             onClick={() => (isManaging ? exitManaging() : setIsManaging(true))}
@@ -200,7 +200,7 @@ export default function SidebarProjectSessions({
             </Button>
           )}
           <Button
-            variant="ghost"
+            variant="outline"
             size="sm"
             className="h-8 text-xs"
             onClick={() => (isManaging ? exitManaging() : setIsManaging(true))}

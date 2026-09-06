@@ -426,7 +426,6 @@ function ChatInterface({
           hasActivityIndicator={hasActivityIndicator}
           chatMessages={chatMessages}
           selectedSession={selectedSession}
-          currentSessionId={currentSessionId}
           provider={provider}
           setProvider={setProvider}
           textareaRef={textareaRef}

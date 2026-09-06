@@ -234,7 +234,7 @@ function SidebarProjectItem({
                 </div>
               </div>
 
-              <div className="flex items-center gap-1">
+              <div className="flex flex-shrink-0 items-center gap-1">
                 {isEditing ? (
                   <>
                     <button
@@ -373,22 +373,22 @@ function SidebarProjectItem({
             {isEditing ? (
               <>
                 <div
-                  className="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-green-600 transition-colors hover:bg-green-50 hover:text-green-700 dark:hover:bg-green-900/20"
+                  className="flex h-6 w-6 cursor-pointer items-center justify-center rounded bg-green-500 text-white transition-colors hover:bg-green-600 dark:bg-green-600 dark:hover:bg-green-500"
                   onClick={(event) => {
                     event.stopPropagation();
                     saveProjectName();
                   }}
                 >
-                  <Check className="h-3 w-3" />
+                  <Check className="!h-3 !w-3" />
                 </div>
                 <div
-                  className="flex h-6 w-6 cursor-pointer items-center justify-center rounded text-gray-500 transition-colors hover:bg-gray-50 hover:text-gray-700 dark:hover:bg-gray-800"
+                  className="flex h-6 w-6 cursor-pointer items-center justify-center rounded bg-gray-400 text-white transition-colors hover:bg-gray-500 dark:bg-gray-600 dark:hover:bg-gray-500"
                   onClick={(event) => {
                     event.stopPropagation();
                     onCancelEditingProject();
                   }}
                 >
-                  <X className="h-3 w-3" />
+                  <X className="!h-3 !w-3" />
                 </div>
               </>
             ) : (
