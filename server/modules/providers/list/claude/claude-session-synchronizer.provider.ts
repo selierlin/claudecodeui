@@ -181,9 +181,9 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       };
     }
 
-    let sessionName = nameMap.get(parsed.sessionId);
+    let sessionName = await this.extractSessionAiTitleFromEnd(filePath, parsed.sessionId);
     if (!sessionName) {
-      sessionName = await this.extractSessionAiTitleFromEnd(filePath, parsed.sessionId);
+      sessionName = nameMap.get(parsed.sessionId);
     }
     if (!sessionName) {
       // Last-resort title source. A transcript that was `/clear`ed and then
@@ -207,6 +207,9 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       const content = await readFile(filePath, 'utf8');
       const lines = content.split(/\r?\n/);
 
+      let aiTitle: string | undefined;
+      let lastPrompt: string | undefined;
+
       for (let index = lines.length - 1; index >= 0; index -= 1) {
         const line = lines[index]?.trim();
         if (!line) {
@@ -223,18 +226,28 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
         const data = parsed as Record<string, unknown>;
         const eventType = typeof data.type === 'string' ? data.type : undefined;
         const eventSessionId = typeof data.sessionId === 'string' ? data.sessionId : undefined;
-        const aiTitle = typeof data.aiTitle === 'string' ? data.aiTitle : undefined;
-        const lastPrompt = typeof data.lastPrompt === 'string' ? data.lastPrompt : undefined;
+        const eventAiTitle = typeof data.aiTitle === 'string' ? data.aiTitle : undefined;
+        const eventLastPrompt = typeof data.lastPrompt === 'string' ? data.lastPrompt : undefined;
         const claudeRenamedTitle = typeof data.customTitle === 'string' ? data.customTitle : undefined;
 
-        if (
-          (eventType === 'ai-title' && eventSessionId === sessionId && aiTitle?.trim()) ||
-          (eventType === 'last-prompt' && eventSessionId === sessionId && lastPrompt?.trim()) ||
-          (eventType === "custom-title" && eventSessionId === sessionId && claudeRenamedTitle?.trim())
-        ) {
-          return aiTitle || lastPrompt || claudeRenamedTitle;
+        if (eventSessionId !== sessionId) {
+          continue;
+        }
+
+        // A `/rename` title is the strongest on-disk signal, so return the
+        // newest such event immediately when scanning backwards.
+        if (eventType === 'custom-title' && claudeRenamedTitle?.trim()) {
+          return claudeRenamedTitle;
+        }
+        if (eventType === 'ai-title' && eventAiTitle?.trim() && aiTitle === undefined) {
+          aiTitle = eventAiTitle;
+        }
+        if (eventType === 'last-prompt' && eventLastPrompt?.trim() && lastPrompt === undefined) {
+          lastPrompt = eventLastPrompt;
         }
       }
+
+      return aiTitle || lastPrompt;
     } catch {
       // Ignore missing/unreadable files so sync can continue.
     }

@@ -109,6 +109,27 @@ test('prefers ai-title metadata over the first user prompt', async () => {
   });
 });
 
+test('prefers ai-title metadata over the history.jsonl display prompt', async () => {
+  await withIsolatedEnvironment(async (homeDir) => {
+    const sessionId = 'sess-ai-title-vs-history';
+    const cwd = path.join(homeDir, 'project');
+    await mkdir(path.join(homeDir, '.claude'), { recursive: true });
+    await writeFile(
+      path.join(homeDir, '.claude', 'history.jsonl'),
+      `${JSON.stringify({ sessionId, display: 'Delete operation prompt' })}\n`
+    );
+    await writeSessionFile(homeDir, sessionId, [
+      makeUserMessage(sessionId, cwd, 'Delete operation prompt'),
+      makeAssistantMessage(sessionId, cwd, 'ok'),
+      makeAiTitle(sessionId, cwd, 'Uncommitted changes'),
+    ]);
+
+    await new ClaudeSessionSynchronizer().synchronize();
+
+    assert.equal(readCustomName(sessionId), 'Uncommitted changes');
+  });
+});
+
 test('skips a leading slash command and uses the next real prompt', async () => {
   await withIsolatedEnvironment(async (homeDir) => {
     const sessionId = 'sess-slash';
