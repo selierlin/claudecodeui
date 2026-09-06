@@ -1,6 +1,7 @@
 import { getConnection } from '@/modules/database/connection.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
 import { normalizeProjectPath } from '@/shared/utils.js';
+import type { SessionNameSource } from '@/shared/types.js';
 
 type SessionRow = {
   session_id: string;
@@ -9,6 +10,8 @@ type SessionRow = {
   project_path: string | null;
   jsonl_path: string | null;
   custom_name: string | null;
+  /** Where `custom_name` came from; used to decide automatic title upgrades. */
+  name_source: SessionNameSource | null;
   /** Model this session runs with; NULL until the app records one for it. */
   model: string | null;
   /** Reasoning effort this session runs with; NULL until the app records one. */
@@ -28,7 +31,7 @@ type RecentSessionsPage = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, model, effort, isPinned, forked_from_session_id, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, name_source, model, effort, isPinned, forked_from_session_id, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -89,7 +92,8 @@ export const sessionsDb = {
     customName?: string,
     createdAt?: string,
     updatedAt?: string,
-    jsonlPath?: string | null
+    jsonlPath?: string | null,
+    nameSource: SessionNameSource = 'provider_title'
   ): string {
     const db = getConnection();
     const createdAtValue = normalizeTimestamp(createdAt);
@@ -117,8 +121,18 @@ export const sessionsDb = {
            jsonl_path = ?,
            isArchived = 0,
            custom_name = CASE
-             WHEN session_id <> provider_session_id AND custom_name IS NOT NULL THEN custom_name
+             WHEN session_id <> provider_session_id
+               AND custom_name IS NOT NULL
+               AND name_source IN ('manual_rename', 'claude_custom_title', 'fork', 'legacy_unknown')
+               THEN custom_name
              ELSE COALESCE(?, custom_name)
+           END,
+           name_source = CASE
+             WHEN session_id <> provider_session_id
+               AND custom_name IS NOT NULL
+               AND name_source IN ('manual_rename', 'claude_custom_title', 'fork', 'legacy_unknown')
+               THEN name_source
+             ELSE COALESCE(?, name_source)
            END
          WHERE session_id = ? AND isArchived = 0`
       ).run(
@@ -127,6 +141,7 @@ export const sessionsDb = {
         normalizedProjectPath,
         jsonlPath ?? null,
         customName ?? null,
+        nameSource,
         existing.session_id
       );
 
@@ -137,8 +152,8 @@ export const sessionsDb = {
     // keyed by the provider-native id for both columns. The ON CONFLICT path
     // covers legacy rows that predate the provider_session_id mapping.
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, isArchived, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
+      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, name_source, project_path, jsonl_path, isArchived, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
        ON CONFLICT(session_id) DO UPDATE SET
          provider = excluded.provider,
          provider_session_id = excluded.provider_session_id,
@@ -147,15 +162,25 @@ export const sessionsDb = {
          jsonl_path = excluded.jsonl_path,
          isArchived = 0,
          custom_name = CASE
-           WHEN sessions.session_id <> sessions.provider_session_id AND sessions.custom_name IS NOT NULL
+           WHEN sessions.session_id <> sessions.provider_session_id
+             AND sessions.custom_name IS NOT NULL
+             AND sessions.name_source IN ('manual_rename', 'claude_custom_title', 'fork', 'legacy_unknown')
              THEN sessions.custom_name
            ELSE COALESCE(excluded.custom_name, sessions.custom_name)
+         END,
+         name_source = CASE
+           WHEN sessions.session_id <> sessions.provider_session_id
+             AND sessions.custom_name IS NOT NULL
+             AND sessions.name_source IN ('manual_rename', 'claude_custom_title', 'fork', 'legacy_unknown')
+             THEN sessions.name_source
+           ELSE COALESCE(excluded.name_source, sessions.name_source)
          END`
     ).run(
       providerSessionId,
       provider,
       providerSessionId,
       customName ?? null,
+      nameSource,
       normalizedProjectPath,
       jsonlPath ?? null,
       createdAtValue,
@@ -179,6 +204,7 @@ export const sessionsDb = {
     provider: string,
     projectPath: string,
     customName?: string,
+    nameSource: SessionNameSource = 'initial_message',
   ): string {
     const db = getConnection();
     const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
@@ -186,9 +212,9 @@ export const sessionsDb = {
     projectsDb.createProjectPath(normalizedProjectPath);
 
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, isArchived, created_at, updated_at)
-       VALUES (?, ?, NULL, ?, ?, NULL, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
-    ).run(sessionId, provider, customName ?? null, normalizedProjectPath);
+      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, name_source, project_path, jsonl_path, isArchived, created_at, updated_at)
+       VALUES (?, ?, NULL, ?, ?, ?, NULL, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+    ).run(sessionId, provider, customName ?? null, nameSource, normalizedProjectPath);
 
     return sessionId;
   },
@@ -209,6 +235,7 @@ export const sessionsDb = {
     providerSessionId: string;
     jsonlPath: string;
     forkedFromSessionId: string;
+    nameSource: SessionNameSource;
     model: string | null;
     effort: string | null;
   }): string {
@@ -224,13 +251,14 @@ export const sessionsDb = {
       db.prepare('DELETE FROM sessions WHERE session_id = ? AND session_id <> ?')
         .run(input.providerSessionId, input.sessionId);
       db.prepare(
-        `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, model, effort, forked_from_session_id, isArchived, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+        `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, name_source, project_path, jsonl_path, model, effort, forked_from_session_id, isArchived, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
       ).run(
         input.sessionId,
         input.provider,
         input.providerSessionId,
         input.customName,
+        input.nameSource,
         normalizedProjectPath,
         input.jsonlPath,
         input.model,
@@ -271,9 +299,19 @@ export const sessionsDb = {
              provider_session_id = ?,
              jsonl_path = COALESCE(jsonl_path, ?),
              custom_name = COALESCE(custom_name, ?),
+             name_source = CASE
+               WHEN custom_name IS NULL THEN ?
+               ELSE name_source
+             END,
              updated_at = CURRENT_TIMESTAMP
            WHERE session_id = ?`
-        ).run(providerSessionId, duplicate.jsonl_path, duplicate.custom_name, sessionId);
+        ).run(
+          providerSessionId,
+          duplicate.jsonl_path,
+          duplicate.custom_name,
+          duplicate.name_source,
+          sessionId
+        );
         return;
       }
 
@@ -460,13 +498,18 @@ export const sessionsDb = {
     ).run(effort, sessionId);
   },
 
-  updateSessionCustomName(sessionId: string, customName: string): void {
+  updateSessionCustomName(
+    sessionId: string,
+    customName: string,
+    nameSource: SessionNameSource = 'manual_rename',
+  ): void {
     const db = getConnection();
     db.prepare(
       `UPDATE sessions
-       SET custom_name = ?
+       SET custom_name = ?,
+           name_source = ?
        WHERE session_id = ?`
-    ).run(customName, sessionId);
+    ).run(customName, nameSource, sessionId);
   },
 
   getSessionById(sessionId: string): SessionRow | null {

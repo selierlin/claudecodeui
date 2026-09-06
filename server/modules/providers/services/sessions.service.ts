@@ -274,7 +274,13 @@ export const sessionsService = {
 
     const sessionId = randomUUID();
     const sessionName = buildCloudCliSessionName(initialMessage);
-    sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath, sessionName);
+    sessionsDb.createAppSession(
+      sessionId,
+      provider,
+      normalizedProjectPath,
+      sessionName,
+      'initial_message',
+    );
 
     return {
       sessionId,
@@ -338,6 +344,7 @@ export const sessionsService = {
       provider,
       projectPath: source.project_path ?? '',
       customName: sessionName,
+      nameSource: options.title?.trim() ? 'manual_rename' : 'fork',
       providerSessionId: forked.providerSessionId,
       jsonlPath: forked.jsonlPath,
       forkedFromSessionId: sessionId,

@@ -437,6 +437,24 @@ const addForkedFromSessionIdColumn = (db: Database): void => {
 };
 
 /**
+ * Adds the session title provenance column.
+ *
+ * Pre-existing rows default to `legacy_unknown` because their title source was
+ * not recorded. New writes must supply an explicit `SessionNameSource` so a
+ * later provider scan can distinguish a user rename from an automatic title.
+ */
+const addSessionNameSourceColumn = (db: Database): void => {
+  const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
+  addColumnToTableIfNotExists(
+    db,
+    'sessions',
+    columnNames,
+    'name_source',
+    "TEXT NOT NULL DEFAULT 'legacy_unknown'"
+  );
+};
+
+/**
  * Adds the `model` column that records which model each session runs with.
  *
  * Left NULL for pre-existing rows on purpose: the model resolver falls back to
@@ -611,6 +629,7 @@ export const runMigrations = (db: Database) => {
     addSessionEffortColumn(db);
     addSessionIsPinnedColumn(db);
     addForkedFromSessionIdColumn(db);
+    addSessionNameSourceColumn(db);
     ensureProjectsForSessionPaths(db);
     db.exec(SCHEDULED_MESSAGES_TABLE_SCHEMA_SQL);
 

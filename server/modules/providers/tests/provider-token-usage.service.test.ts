@@ -20,6 +20,7 @@ function createSessionRow(overrides: Record<string, unknown> = {}) {
     project_path: null,
     jsonl_path: null,
     custom_name: null,
+    name_source: 'legacy_unknown' as const,
     model: null,
     effort: null,
     isPinned: 0,

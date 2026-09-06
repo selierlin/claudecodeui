@@ -11,11 +11,13 @@ import {
   readFileTimestamps,
 } from '@/shared/utils.js';
 import type { IProviderSessionSynchronizer } from '@/shared/interfaces.js';
+import type { SessionNameSource } from '@/shared/types.js';
 
 type ParsedSession = {
   sessionId: string;
   projectPath: string;
   sessionName?: string;
+  sessionNameSource?: SessionNameSource;
 };
 
 /**
@@ -72,7 +74,8 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
         parsed.sessionName,
         timestamps.createdAt,
         timestamps.updatedAt,
-        filePath
+        filePath,
+        parsed.sessionNameSource ?? 'provider_title'
       );
       processed += 1;
     }
@@ -105,7 +108,8 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       parsed.sessionName,
       timestamps.createdAt,
       timestamps.updatedAt,
-      filePath
+      filePath,
+      parsed.sessionNameSource ?? 'provider_title'
     );
   }
 
@@ -174,16 +178,29 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
     const existingSession = sessionsDb.getSessionByProviderSessionId(parsed.sessionId)
       ?? sessionsDb.getSessionById(parsed.sessionId);
     const existingSessionName = existingSession?.custom_name;
-    if (existingSessionName && existingSessionName !== 'Untitled Claude Session') {
+    const existingSource = existingSession?.name_source ?? 'legacy_unknown';
+    if (
+      existingSessionName
+      && existingSessionName !== 'Untitled Claude Session'
+      && shouldPreserveExistingClaudeName(existingSource)
+    ) {
       return {
         ...parsed,
         sessionName: normalizeSessionName(existingSessionName, 'Untitled Claude Session'),
+        sessionNameSource: existingSource,
       };
     }
 
-    let sessionName = await this.extractSessionAiTitleFromEnd(filePath, parsed.sessionId);
+    let sessionName: string | undefined;
+    let sessionNameSource: SessionNameSource | undefined;
+    const providerTitle = await this.extractSessionAiTitleFromEnd(filePath, parsed.sessionId);
+    if (providerTitle) {
+      sessionName = providerTitle.name;
+      sessionNameSource = providerTitle.source;
+    }
     if (!sessionName) {
       sessionName = nameMap.get(parsed.sessionId);
+      sessionNameSource = sessionName ? 'history_display' : undefined;
     }
     if (!sessionName) {
       // Last-resort title source. A transcript that was `/clear`ed and then
@@ -191,18 +208,20 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       // event, so fall back to the first real user prompt instead of leaving
       // the session labelled "Untitled Claude Session".
       sessionName = await this.extractFirstUserMessage(filePath, parsed.sessionId);
+      sessionNameSource = sessionName ? 'first_user_prompt' : undefined;
     }
 
     return {
       ...parsed,
       sessionName: normalizeSessionName(sessionName, 'Untitled Claude Session'),
+      sessionNameSource,
     };
   }
 
   private async extractSessionAiTitleFromEnd(
     filePath: string,
     sessionId: string
-  ): Promise<string | undefined> {
+  ): Promise<{ name: string; source: SessionNameSource } | undefined> {
     try {
       const content = await readFile(filePath, 'utf8');
       const lines = content.split(/\r?\n/);
@@ -237,7 +256,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
         // A `/rename` title is the strongest on-disk signal, so return the
         // newest such event immediately when scanning backwards.
         if (eventType === 'custom-title' && claudeRenamedTitle?.trim()) {
-          return claudeRenamedTitle;
+          return { name: claudeRenamedTitle, source: 'claude_custom_title' };
         }
         if (eventType === 'ai-title' && eventAiTitle?.trim() && aiTitle === undefined) {
           aiTitle = eventAiTitle;
@@ -247,7 +266,12 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
         }
       }
 
-      return aiTitle || lastPrompt;
+      if (aiTitle) {
+        return { name: aiTitle, source: 'claude_ai_title' };
+      }
+      if (lastPrompt) {
+        return { name: lastPrompt, source: 'claude_last_prompt' };
+      }
     } catch {
       // Ignore missing/unreadable files so sync can continue.
     }
@@ -276,6 +300,22 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       return undefined;
     }
   }
+}
+
+/**
+ * Returns true when an existing Claude session title must not be replaced by
+ * a title derived from the transcript during a later sync.
+ *
+ * User and provider-authored renames are authoritative. Legacy rows with no
+ * recorded source are preserved too: their provenance is unknown, so a bulk
+ * backfill should decide them explicitly rather than a routine scan silently
+ * rewriting a possible manual rename.
+ */
+function shouldPreserveExistingClaudeName(source: SessionNameSource): boolean {
+  return source === 'manual_rename'
+    || source === 'claude_custom_title'
+    || source === 'fork'
+    || source === 'legacy_unknown';
 }
 
 /**

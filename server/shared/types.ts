@@ -68,6 +68,27 @@ export type AuthenticatedWebSocketRequest = IncomingMessage & {
  */
 export type LLMProvider = 'claude' | 'codex' | 'cursor' | 'opencode' | 'dsh' | 'workbuddy';
 
+//----------------- SESSION NAME SOURCE ------------
+/**
+ * Where a persisted `sessions.custom_name` came from.
+ *
+ * Used to decide whether a later provider title may replace the current one.
+ * `manual_rename` is always authoritative; lower-priority automatic sources
+ * such as `history_display` and `claude_last_prompt` may be upgraded, while a
+ * provider-authored `claude_custom_title` is preserved over generated titles.
+ */
+export type SessionNameSource =
+  | 'manual_rename'
+  | 'initial_message'
+  | 'claude_ai_title'
+  | 'claude_custom_title'
+  | 'claude_last_prompt'
+  | 'history_display'
+  | 'first_user_prompt'
+  | 'provider_title'
+  | 'fork'
+  | 'legacy_unknown';
+
 /**
  * One selectable model row in a provider model catalog.
  */

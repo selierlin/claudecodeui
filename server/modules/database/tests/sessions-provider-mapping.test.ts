@@ -40,6 +40,7 @@ test('disk-discovered sessions are keyed by the provider id for both columns', a
 
     const byProviderId = sessionsDb.getSessionByProviderSessionId('provider-abc');
     assert.equal(byProviderId?.session_id, 'provider-abc');
+    assert.equal(row?.name_source, 'provider_title');
   });
 });
 
@@ -49,7 +50,7 @@ test('app sessions get the provider id assigned without creating a duplicate row
     sessionsDb.assignProviderSessionId('app-id-1', 'provider-xyz');
 
     // A later synchronizer pass that discovers the transcript on disk must
-    // update the app row in place instead of inserting a provider-keyed row.
+    // update the app row in place and may upgrade its initial-message title.
     const returnedId = sessionsDb.createSession(
       'provider-xyz',
       'claude',
@@ -66,7 +67,8 @@ test('app sessions get the provider id assigned without creating a duplicate row
     const row = sessionsDb.getSessionById('app-id-1');
     assert.equal(row?.provider_session_id, 'provider-xyz');
     assert.equal(row?.jsonl_path, '/fake/path/provider-xyz.jsonl');
-    assert.equal(row?.custom_name, 'Initial CloudCLI message');
+    assert.equal(row?.custom_name, 'Synced Name');
+    assert.equal(row?.name_source, 'provider_title');
   });
 });
 
@@ -96,6 +98,30 @@ test('assignProviderSessionId merges a watcher-created duplicate into the app ro
     // Transcript path and name from the duplicate are adopted.
     assert.equal(rows[0]?.jsonl_path, '/fake/provider-race.jsonl');
     assert.equal(rows[0]?.custom_name, 'Watcher Name');
+    assert.equal(rows[0]?.name_source, 'provider_title');
+  });
+});
+
+test('provider sync does not overwrite a manually renamed app session', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-id-manual', 'claude', '/workspace/demo', 'Initial');
+    sessionsDb.updateSessionCustomName('app-id-manual', 'User title', 'manual_rename');
+    sessionsDb.assignProviderSessionId('app-id-manual', 'provider-manual');
+
+    sessionsDb.createSession(
+      'provider-manual',
+      'claude',
+      '/workspace/demo',
+      'Generated title',
+      undefined,
+      undefined,
+      '/fake/provider-manual.jsonl',
+      'claude_ai_title',
+    );
+
+    const row = sessionsDb.getSessionById('app-id-manual');
+    assert.equal(row?.custom_name, 'User title');
+    assert.equal(row?.name_source, 'manual_rename');
   });
 });
 

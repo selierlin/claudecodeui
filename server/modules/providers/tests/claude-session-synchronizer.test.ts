@@ -75,8 +75,19 @@ const makeAiTitle = (sessionId: string, cwd: string, title: string) => ({
   aiTitle: title,
 });
 
+const makeCustomTitle = (sessionId: string, cwd: string, title: string) => ({
+  type: 'custom-title',
+  sessionId,
+  cwd,
+  customTitle: title,
+});
+
 const readCustomName = (sessionId: string): string | null =>
   sessionsDb.getSessionByProviderSessionId(sessionId)?.custom_name ?? null;
+
+const readSession = (sessionId: string) =>
+  sessionsDb.getSessionByProviderSessionId(sessionId)
+    ?? sessionsDb.getSessionById(sessionId);
 
 test('uses the first user prompt when no title metadata exists', async () => {
   await withIsolatedEnvironment(async (homeDir) => {
@@ -106,6 +117,7 @@ test('prefers ai-title metadata over the first user prompt', async () => {
     await new ClaudeSessionSynchronizer().synchronize();
 
     assert.equal(readCustomName(sessionId), 'Sorting arrays');
+    assert.equal(readSession(sessionId)?.name_source, 'claude_ai_title');
   });
 });
 
@@ -127,6 +139,70 @@ test('prefers ai-title metadata over the history.jsonl display prompt', async ()
     await new ClaudeSessionSynchronizer().synchronize();
 
     assert.equal(readCustomName(sessionId), 'Uncommitted changes');
+    assert.equal(readSession(sessionId)?.name_source, 'claude_ai_title');
+  });
+});
+
+test('a manually renamed app session keeps its title and source', async () => {
+  await withIsolatedEnvironment(async (homeDir) => {
+    const sessionId = 'sess-manual-rename';
+    const appSessionId = 'app-manual-rename';
+    const cwd = path.join(homeDir, 'project');
+    const filePath = path.join(homeDir, '.claude', 'projects', sessionId, `${sessionId}.jsonl`);
+
+    await writeSessionFile(homeDir, sessionId, [
+      makeUserMessage(sessionId, cwd, 'Original prompt'),
+      makeAssistantMessage(sessionId, cwd, 'ok'),
+      makeAiTitle(sessionId, cwd, 'Generated title'),
+    ]);
+    sessionsDb.createAppSession(appSessionId, 'claude', cwd, 'Original prompt');
+    sessionsDb.updateSessionCustomName(appSessionId, 'My manual title', 'manual_rename');
+    sessionsDb.assignProviderSessionId(appSessionId, sessionId);
+
+    await new ClaudeSessionSynchronizer().synchronizeFile(filePath);
+
+    assert.equal(readSession(appSessionId)?.custom_name, 'My manual title');
+    assert.equal(readSession(appSessionId)?.name_source, 'manual_rename');
+  });
+});
+
+test('an app-created initial-message title can be upgraded to ai-title', async () => {
+  await withIsolatedEnvironment(async (homeDir) => {
+    const sessionId = 'sess-initial-upgrade';
+    const appSessionId = 'app-initial-upgrade';
+    const cwd = path.join(homeDir, 'project');
+    const filePath = path.join(homeDir, '.claude', 'projects', sessionId, `${sessionId}.jsonl`);
+
+    await writeSessionFile(homeDir, sessionId, [
+      makeUserMessage(sessionId, cwd, 'Original prompt'),
+      makeAssistantMessage(sessionId, cwd, 'ok'),
+      makeAiTitle(sessionId, cwd, 'Generated title'),
+    ]);
+    sessionsDb.createAppSession(appSessionId, 'claude', cwd, 'Original prompt');
+    sessionsDb.assignProviderSessionId(appSessionId, sessionId);
+
+    await new ClaudeSessionSynchronizer().synchronizeFile(filePath);
+
+    assert.equal(readSession(appSessionId)?.custom_name, 'Generated title');
+    assert.equal(readSession(appSessionId)?.name_source, 'claude_ai_title');
+  });
+});
+
+test('a Claude custom-title is preferred and recorded as provider rename', async () => {
+  await withIsolatedEnvironment(async (homeDir) => {
+    const sessionId = 'sess-custom-title';
+    const cwd = path.join(homeDir, 'project');
+    await writeSessionFile(homeDir, sessionId, [
+      makeUserMessage(sessionId, cwd, 'Original prompt'),
+      makeAssistantMessage(sessionId, cwd, 'ok'),
+      makeAiTitle(sessionId, cwd, 'Generated title'),
+      makeCustomTitle(sessionId, cwd, 'CLI renamed title'),
+    ]);
+
+    await new ClaudeSessionSynchronizer().synchronize();
+
+    assert.equal(readCustomName(sessionId), 'CLI renamed title');
+    assert.equal(readSession(sessionId)?.name_source, 'claude_custom_title');
   });
 });
 
