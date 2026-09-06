@@ -1213,8 +1213,153 @@ const CODEX_COLLABORATION_CONTROL_TOOLS = new Set([
 // ─── Transcript reader ──────────────────────────────────────────────────────
 
 /**
- * Reads one Codex rollout file and produces the compact per-message records
- * `normalizeHistoryEntry` turns into `NormalizedMessage`s.
+ * One rollout file in a Codex history chain, together with the ordinal above
+ * which its rows belong to a later fork rather than to this file.
+ */
+type CodexHistorySource = {
+  path: string;
+  /** Keep only rows whose `ordinal` is strictly below this value. */
+  endOrdinalExclusive?: number;
+};
+
+/**
+ * Reads the fork provenance Codex writes into a fork's `session_meta`.
+ *
+ * Since Codex 0.150 a forked rollout no longer copies the source history into
+ * the new file; it only records `history_base`, which points at the source
+ * thread and marks the source ordinal where the fork starts. Reading a fork
+ * therefore has to follow that back-reference and prepend the source prefix.
+ */
+async function readCodexHistoryBase(
+  filePath: string,
+): Promise<{ threadId: string; endOrdinalExclusive?: number } | undefined> {
+  try {
+    const stream = fsSync.createReadStream(filePath);
+    const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+
+    for await (const line of rl) {
+      if (!line.trim()) {
+        continue;
+      }
+
+      let entry: AnyRecord;
+      try {
+        entry = JSON.parse(line) as AnyRecord;
+      } catch {
+        continue;
+      }
+
+      if (entry.type !== 'session_meta') {
+        continue;
+      }
+
+      const payload = readObjectRecord(entry.payload);
+      const historyBase = readObjectRecord(payload?.history_base);
+      const threadId = typeof historyBase?.thread_id === 'string' ? historyBase.thread_id : undefined;
+      if (!threadId) {
+        return undefined;
+      }
+
+      return {
+        threadId,
+        endOrdinalExclusive:
+          typeof historyBase?.end_ordinal_exclusive === 'number'
+            ? historyBase.end_ordinal_exclusive
+            : undefined,
+      };
+    }
+  } catch {
+    // A missing or malformed fork provenance means the file is read standalone,
+    // which is the same behavior as before forks carried `history_base`.
+  }
+
+  return undefined;
+}
+
+/**
+ * Resolves a Codex thread id to its rollout file through the session index.
+ *
+ * Both app-created forks and watcher-discovered rollouts store a
+ * `provider_session_id` for every thread, so the source file is reachable
+ * without rescanning the sessions tree. A thread that an edit or rewind moved
+ * the live session off of is no longer in `sessions`, but its rollout path is
+ * retained in the superseded index, so the fork prefix can still be found.
+ */
+function resolveCodexThreadPath(threadId: string): string | undefined {
+  return sessionsDb.getSessionByProviderSessionId(threadId)?.jsonl_path
+    ?? sessionsDb.getSupersededSessionJsonlPath(threadId, PROVIDER);
+}
+
+/**
+ * Expands one rollout file into its ordered history chain, oldest first.
+ *
+ * Each fork's `history_base` names the thread it forked from and how much of
+ * that parent to keep, so the chain is built recursively and the final file is
+ * always last. `endOrdinalExclusive` is the cut the child applies to its
+ * parent, which is why it is attached to the parent source in the result.
+ */
+async function collectCodexHistorySources(
+  filePath: string,
+  endOrdinalExclusive?: number,
+  visited = new Set<string>(),
+): Promise<CodexHistorySource[]> {
+  const canonicalPath = path.resolve(filePath);
+  if (visited.has(canonicalPath)) {
+    return [{ path: filePath, endOrdinalExclusive }];
+  }
+  visited.add(canonicalPath);
+
+  const base = await readCodexHistoryBase(filePath);
+  const parentPath = base?.threadId ? resolveCodexThreadPath(base.threadId) : undefined;
+
+  const sources: CodexHistorySource[] = [];
+  if (parentPath) {
+    sources.push(...await collectCodexHistorySources(parentPath, base?.endOrdinalExclusive, visited));
+  }
+  sources.push({ path: filePath, endOrdinalExclusive });
+  return sources;
+}
+
+/**
+ * Streams parsed rollout rows across an ordered history chain, applying each
+ * source's fork cut while reading so the main transcript loop stays a single
+ * pass over already-filtered entries.
+ */
+async function* iterateCodexHistoryEntries(
+  sources: CodexHistorySource[],
+): AsyncGenerator<AnyRecord> {
+  for (const source of sources) {
+    const fileStream = fsSync.createReadStream(source.path);
+    const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+
+    for await (const line of rl) {
+      if (!line.trim()) {
+        continue;
+      }
+
+      let entry: AnyRecord;
+      try {
+        entry = JSON.parse(line) as AnyRecord;
+      } catch {
+        continue;
+      }
+
+      if (source.endOrdinalExclusive !== undefined) {
+        const ordinal = typeof entry.ordinal === 'number' ? entry.ordinal : undefined;
+        if (ordinal !== undefined && ordinal >= source.endOrdinalExclusive) {
+          continue;
+        }
+      }
+
+      yield entry;
+    }
+  }
+}
+
+/**
+ * Reads a Codex rollout, prepending any source history it was forked from, and
+ * produces the compact per-message records `normalizeHistoryEntry` turns into
+ * `NormalizedMessage`s.
  */
 async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryResult> {
   const sessionFilePath = sessionsDb.getSessionById(sessionId)?.jsonl_path;
@@ -1223,6 +1368,8 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
     console.warn(`Codex session file not found for session ${sessionId}`);
     return { messages: [], total: 0, hasMore: false };
   }
+
+  const historySources = await collectCodexHistorySources(sessionFilePath);
 
   const messages: AnyRecord[] = [];
   let tokenUsage: AnyRecord | null = null;
@@ -1259,9 +1406,6 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
   /** Turns whose prompt already carries the anchor, so only the first does. */
   const anchoredTurnIds = new Set<string>();
 
-  const fileStream = fsSync.createReadStream(sessionFilePath);
-  const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
-
   /** Emits a tool_result row unless the call already produced one. */
   const pushToolResult = (callId: string, timestamp: string, output: string, isError: boolean) => {
     if (completedExecCalls.has(callId)) {
@@ -1271,18 +1415,7 @@ async function getCodexSessionMessages(sessionId: string): Promise<CodexHistoryR
     messages.push({ type: 'tool_result', timestamp, toolCallId: callId, output, isError });
   };
 
-  for await (const line of rl) {
-    if (!line.trim()) {
-      continue;
-    }
-
-    let entry: AnyRecord;
-    try {
-      entry = JSON.parse(line) as AnyRecord;
-    } catch {
-      continue;
-    }
-
+  for await (const entry of iterateCodexHistoryEntries(historySources)) {
     const payload = readObjectRecord(entry.payload);
     if (!payload) {
       continue;

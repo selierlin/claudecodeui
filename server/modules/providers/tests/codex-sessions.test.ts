@@ -551,3 +551,96 @@ test('an exec script that updates the plan yields the steps it set', () => {
     ],
   }]);
 });
+
+test('a forked Codex session prepends its source history and cuts at the fork point', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-fork-history-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+
+  const sourcePath = path.join(tempRoot, 'source.jsonl');
+  const forkPath = path.join(tempRoot, 'fork.jsonl');
+
+  await writeFile(sourcePath, `${[
+    JSON.stringify({ ordinal: 0, type: 'session_meta', payload: { id: 'source-thread', cwd: workspacePath } }),
+    JSON.stringify({ ordinal: 1, type: 'event_msg', payload: { type: 'user_message', message: 'source question' } }),
+    JSON.stringify({ ordinal: 2, type: 'event_msg', payload: { type: 'user_message', message: 'should be cut' } }),
+  ].join('\n')}\n`, 'utf8');
+
+  await writeFile(forkPath, `${[
+    JSON.stringify({
+      ordinal: 2,
+      type: 'session_meta',
+      payload: {
+        id: 'fork-thread',
+        cwd: workspacePath,
+        history_base: { thread_id: 'source-thread', end_ordinal_exclusive: 2 },
+      },
+    }),
+    JSON.stringify({ ordinal: 3, type: 'event_msg', payload: { type: 'user_message', message: 'fork question' } }),
+  ].join('\n')}\n`, 'utf8');
+
+  try {
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createSession('source-thread', 'codex', workspacePath, undefined, undefined, undefined, sourcePath);
+      sessionsDb.createSession('fork-thread', 'codex', workspacePath, undefined, undefined, undefined, forkPath);
+
+      const history = await new CodexSessionsProvider().fetchHistory('fork-thread');
+      const contents = history.messages.map((message) => String(message.content ?? ''));
+
+      assert.ok(contents.some((content) => content.includes('source question')), 'source prefix must be visible');
+      assert.ok(contents.some((content) => content.includes('fork question')), 'fork-only rows must be visible');
+      assert.ok(!contents.some((content) => content.includes('should be cut')), 'rows past the fork cut must be dropped');
+    });
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('a Codex fork follows its history_base through a superseded source thread', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-fork-superseded-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+
+  const sourcePath = path.join(tempRoot, 'source.jsonl');
+  const forkPath = path.join(tempRoot, 'fork.jsonl');
+
+  await writeFile(sourcePath, `${[
+    JSON.stringify({ ordinal: 0, type: 'session_meta', payload: { id: 'source-thread', cwd: workspacePath } }),
+    JSON.stringify({ ordinal: 1, type: 'event_msg', payload: { type: 'user_message', message: 'question before the rewind' } }),
+    JSON.stringify({ ordinal: 2, type: 'event_msg', payload: { type: 'user_message', message: 'rewound away' } }),
+  ].join('\n')}\n`, 'utf8');
+
+  await writeFile(forkPath, `${[
+    JSON.stringify({
+      ordinal: 2,
+      type: 'session_meta',
+      payload: {
+        id: 'fork-thread',
+        cwd: workspacePath,
+        history_base: { thread_id: 'source-thread', end_ordinal_exclusive: 2 },
+      },
+    }),
+    JSON.stringify({ ordinal: 3, type: 'event_msg', payload: { type: 'user_message', message: 'question after the rewind' } }),
+  ].join('\n')}\n`, 'utf8');
+
+  try {
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createSession('fork-thread', 'codex', workspacePath, undefined, undefined, undefined, forkPath);
+      sessionsDb.markProviderSessionSuperseded({
+        providerSessionId: 'source-thread',
+        provider: 'codex',
+        sessionId: 'fork-thread',
+        jsonlPath: sourcePath,
+      });
+
+      const history = await new CodexSessionsProvider().fetchHistory('fork-thread');
+      const contents = history.messages.map((message) => String(message.content ?? ''));
+
+      assert.ok(contents.some((content) => content.includes('question before the rewind')), 'superseded source prefix must be visible');
+      assert.ok(contents.some((content) => content.includes('question after the rewind')), 'post-rewind rows must be visible');
+      assert.ok(!contents.some((content) => content.includes('rewound away')), 'rows past the rewind cut must be dropped');
+    });
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

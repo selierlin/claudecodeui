@@ -377,6 +377,28 @@ export const sessionsDb = {
   },
 
   /**
+   * Returns the transcript path recorded when a provider session was
+   * superseded, or `undefined` when it never was.
+   *
+   * `resolveCodexThreadPath` uses this to follow a fork's `history_base` back
+   * to a thread that an edit or rewind already moved the live session off of:
+   * that thread no longer has a row in `sessions`, but its rollout file is the
+   * one the fork's history prefix lives in.
+   */
+  getSupersededSessionJsonlPath(providerSessionId: string, provider: string): string | undefined {
+    const db = getConnection();
+    const row = db
+      .prepare(
+        `SELECT jsonl_path FROM superseded_provider_sessions
+         WHERE provider_session_id = ? AND provider = ?
+         LIMIT 1`
+      )
+      .get(providerSessionId, provider) as { jsonl_path: string | null } | undefined;
+
+    return row?.jsonl_path ?? undefined;
+  },
+
+  /**
    * Transcripts one session has left behind, for the caller that deletes a
    * conversation from disk.
    *
