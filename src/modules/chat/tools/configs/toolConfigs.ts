@@ -809,9 +809,34 @@ export const TOOL_CONFIGS: Record<string, ToolDisplayConfig> = {
 };
 
 /**
+ * Browser (browser-use) MCP tools embed a ~150KB base64 screenshot in every
+ * result. The screenshot is rendered by the Browser tab; showing it in the
+ * transcript only bloats the DOM and slows session load, so the result is
+ * hidden and the input row (url / selector / action) is what remains.
+ */
+const BROWSER_TOOL_CONFIG: ToolDisplayConfig = {
+  input: {
+    type: 'collapsible',
+    title: (input) => summarizeToolInput(input),
+    defaultOpen: false,
+    contentType: 'text',
+    getContentProps: (input) => ({
+      content: typeof input === 'string' ? input : JSON.stringify(input, null, 2),
+      format: 'code',
+    }),
+  },
+  result: {
+    hidden: true,
+  },
+};
+
+/**
  * Get configuration for a tool, with fallback to default
  */
 export function getToolConfig(toolName: string): ToolDisplayConfig {
+  if (toolName.startsWith('mcp__cloudcli-browser__')) {
+    return BROWSER_TOOL_CONFIG;
+  }
   return TOOL_CONFIGS[toolName] || TOOL_CONFIGS.Default;
 }
 

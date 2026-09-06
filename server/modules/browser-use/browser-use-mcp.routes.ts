@@ -12,6 +12,27 @@ function readBearerToken(header: unknown): string | null {
   return match?.[1]?.trim() || null;
 }
 
+/**
+ * Strips the base64 screenshot from MCP tool results before they reach the
+ * agent. Screenshots are only rendered by the Browser tab (which reads them
+ * through /api/browser-use/sessions); embedding a ~150KB data URL in every
+ * tool_result bloats the transcript and slows session load.
+ */
+function stripScreenshotDataUrl(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(stripScreenshotDataUrl);
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const next: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(record)) {
+      next[key] = key === 'screenshotDataUrl' ? null : stripScreenshotDataUrl(val);
+    }
+    return next;
+  }
+  return value;
+}
+
 router.use((req, res, next) => {
   const expected = browserUseService.getMcpToken();
   const token = readBearerToken(req.headers.authorization) || String(req.headers['x-browser-use-mcp-token'] || '');
@@ -108,7 +129,7 @@ router.post('/tools/:toolName', async (req, res) => {
         return;
     }
 
-    res.json({ success: true, data: result });
+    res.json({ success: true, data: stripScreenshotDataUrl(result) });
   } catch (error) {
     res.status(400).json({
       success: false,

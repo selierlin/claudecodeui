@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Bot,
@@ -113,9 +113,13 @@ function getStatusDot(status: BrowserUseSession['status']): string {
   return 'bg-border';
 }
 
+/** Minimum interval between automatic session refreshes when the panel becomes visible again. */
+const REFRESH_THROTTLE_MS = 3000;
+
 /** Used by the project-workspace module to render the Browser tab's session list and live preview. */
 export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUsePanelProps) {
   const { t } = useTranslation('browser');
+  const lastRefreshAtRef = useRef(0);
 
   const [status, setStatus] = useState<BrowserUseStatus | null>(null);
   const [sessions, setSessions] = useState<BrowserUseSession[]>([]);
@@ -175,6 +179,8 @@ export default function BrowserUsePanel({ isVisible, onShowSettings }: BrowserUs
 
   useEffect(() => {
     if (!isVisible) return;
+    if (Date.now() - lastRefreshAtRef.current < REFRESH_THROTTLE_MS) return;
+    lastRefreshAtRef.current = Date.now();
     void refresh();
   }, [isVisible, refresh]);
 

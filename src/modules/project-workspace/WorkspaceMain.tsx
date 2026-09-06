@@ -159,8 +159,9 @@ function WorkspaceMain({
       />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div className={`flex min-h-0 min-w-[200px] flex-col overflow-hidden ${editorExpanded ? 'hidden' : ''} flex-1`}>
-          <div className={`h-full ${activeTab === 'chat' ? 'block' : 'hidden'}`}>
+        <div className={`relative flex min-h-0 min-w-[200px] flex-col overflow-hidden ${editorExpanded ? 'hidden' : ''} flex-1`}>
+          {/* Chat keeps its layout while hidden (absolute + invisible) so tabbing back skips a full transcript re-layout. */}
+          <div className={`absolute inset-0 ${activeTab === 'chat' ? 'visible' : 'invisible'}`}>
             <WorkspaceErrorBoundary showDetails>
               <ChatInterface
                 isActive={activeTab === 'chat'}
@@ -213,8 +214,8 @@ function WorkspaceMain({
 
           {shouldShowTasksTab && <TaskMasterPanel isVisible={activeTab === 'tasks'} />}
 
-          {shouldShowBrowserTab && activeTab === 'browser' && (
-            <div className="h-full overflow-hidden">
+          {shouldShowBrowserTab && (
+            <div className={`h-full overflow-hidden ${activeTab === 'browser' ? 'block' : 'hidden'}`}>
               <BrowserUsePanel isVisible={activeTab === 'browser'} onShowSettings={onShowSettings} />
             </div>
           )}
