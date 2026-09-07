@@ -20,6 +20,22 @@ import {
 export const CODEX_PREDEFINED_MODELS: ProviderModelsDefinition = {
   OPTIONS: [
     {
+      value: 'gpt-6-astra',
+      label: 'GPT-6 Astra',
+      description: 'Most capable frontier agentic coding model.',
+      effort: {
+        default: 'medium',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+          { value: 'ultra' },
+        ],
+      },
+    },
+    {
       value: 'gpt-5.6-sol',
       label: 'GPT-5.6 Sol',
       description: 'Latest frontier agentic coding model.',
@@ -70,15 +86,6 @@ export const CODEX_PREDEFINED_MODELS: ProviderModelsDefinition = {
       value: 'gpt-5.5',
       label: 'GPT-5.5',
       description: 'Frontier model for complex coding, research, and real-world work.',
-      effort: {
-        default: 'medium',
-        values: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'xhigh' }],
-      },
-    },
-    {
-      value: 'gpt-5.4',
-      label: 'GPT-5.4',
-      description: 'Strong model for everyday coding.',
       effort: {
         default: 'medium',
         values: [{ value: 'low' }, { value: 'medium' }, { value: 'high' }, { value: 'xhigh' }],
@@ -206,54 +213,79 @@ export class CodexProviderModels implements IProviderModels {
       return CODEX_PREDEFINED_MODELS;
     }
 
+    // Curated entries always win over a CC Switch catalog copy of the same
+    // model, so an overlap keeps the maintained label and effort metadata
+    // instead of surfacing the raw catalog entry again.
+    const predefinedByValue = new Map(
+      CODEX_PREDEFINED_MODELS.OPTIONS.map((option) => [option.value, option] as const),
+    );
+
+    // Catalog JSON entries that are not duplicates of a curated model, ordered
+    // like the catalog file and deduped by slug.
     const configOptions: ProviderModelOption[] = [];
+    const addedValues = new Set<string>();
+    const pushUnique = (option: ProviderModelOption): void => {
+      if (addedValues.has(option.value)) {
+        return;
+      }
+      addedValues.add(option.value);
+      configOptions.push(option);
+    };
+
     if (config.modelCatalogPath) {
-      configOptions.push(...(await readCodexCatalogModels(config.modelCatalogPath)));
+      for (const option of await readCodexCatalogModels(config.modelCatalogPath)) {
+        pushUnique(predefinedByValue.get(option.value) ?? option);
+      }
     }
 
-    // The model Codex is configured to use always leads the list, even when the
-    // catalog JSON does not mention it, so "what is Codex currently set to?" is
-    // the first thing a user sees after picking the Codex tool.
-    if (config.model) {
+    // A configured model the curated catalog already knows needs no extra row:
+    // it renders in place from the curated list. Only a model outside that
+    // catalog (e.g. a third-party one switched in via CC Switch) gets a leading
+    // entry so "what is Codex set to?" stays visible.
+    if (config.model && !predefinedByValue.has(config.model)) {
       const existingIndex = configOptions.findIndex((option) => option.value === config.model);
-      let activeOption: ProviderModelOption;
       if (existingIndex >= 0) {
-        [activeOption] = configOptions.splice(existingIndex, 1);
+        const [activeOption] = configOptions.splice(existingIndex, 1);
+        configOptions.unshift(activeOption);
       } else {
-        activeOption = {
+        configOptions.unshift({
           value: config.model,
           label: config.model,
           description: 'Configured in ~/.codex/config.toml',
-        };
+        });
       }
-
-      // Mirror `model_reasoning_effort` from config.toml as the model's default
-      // reasoning effort when the configured value is among the model's options.
-      const effortValues = activeOption.effort?.values ?? [];
-      if (
-        config.modelReasoningEffort
-        && effortValues.length > 0
-        && effortValues.some((level) => level.value === config.modelReasoningEffort)
-      ) {
-        activeOption = {
-          ...activeOption,
-          effort: {
-            ...(activeOption.effort ?? { values: effortValues }),
-            default: config.modelReasoningEffort,
-          },
-        };
-      }
-
-      configOptions.unshift(activeOption);
     }
 
-    const seenValues = new Set(configOptions.map((option) => option.value));
     const remainingPredefined = CODEX_PREDEFINED_MODELS.OPTIONS.filter(
-      (option) => !seenValues.has(option.value),
+      (option) => !addedValues.has(option.value),
     );
+    const options = [...configOptions, ...remainingPredefined];
+
+    // Mirror `model_reasoning_effort` from config.toml as the default reasoning
+    // effort of whichever entry represents the configured model, when the value
+    // is among that model's supported levels.
+    if (config.model && config.modelReasoningEffort) {
+      const configuredIndex = options.findIndex((option) => option.value === config.model);
+      if (configuredIndex >= 0) {
+        const configuredOption = options[configuredIndex];
+        const effortValues = configuredOption.effort?.values ?? [];
+        if (
+          effortValues.length > 0
+          && effortValues.some((level) => level.value === config.modelReasoningEffort)
+        ) {
+          options[configuredIndex] = {
+            ...configuredOption,
+            effort: {
+              ...(configuredOption.effort ?? { values: effortValues }),
+              default: config.modelReasoningEffort,
+            },
+          };
+        }
+      }
+    }
 
     return {
-      OPTIONS: [...configOptions, ...remainingPredefined],
+      OPTIONS: options,
       DEFAULT: config.model ?? CODEX_PREDEFINED_MODELS.DEFAULT,
     };
   }

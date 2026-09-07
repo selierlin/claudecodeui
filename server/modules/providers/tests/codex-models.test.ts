@@ -89,6 +89,89 @@ test('Codex surfaces the CC Switch catalog models with the configured model firs
   assert.equal((await adapter.getCurrentActiveModel()).model, 'deepseek-v4-flash');
 });
 
+test('Codex keeps the curated label when the configured model is a predefined one', async () => {
+  const configPath = await writeTempCodexConfig('model = "gpt-5.6-sol"\n');
+  const adapter = new CodexProviderModels(configPath);
+
+  const models = await adapter.getSupportedModels();
+
+  assert.equal(models.DEFAULT, 'gpt-5.6-sol');
+  const sol = models.OPTIONS.find((option) => option.value === 'gpt-5.6-sol');
+  assert.ok(sol);
+  assert.equal(sol.label, 'GPT-5.6 Sol');
+  assert.equal(
+    models.OPTIONS.filter((option) => option.value === 'gpt-5.6-sol').length,
+    1,
+  );
+});
+
+test('Codex does not hoist a curated configured model above the curated order', async () => {
+  const configPath = await writeTempCodexConfig('model = "gpt-5.5"\n');
+  const adapter = new CodexProviderModels(configPath);
+
+  const models = await adapter.getSupportedModels();
+
+  // gpt-5.5 stays at its curated slot; the curated order is left untouched.
+  assert.deepEqual(
+    models.OPTIONS.map((option) => option.value),
+    CODEX_PREDEFINED_MODELS.OPTIONS.map((option) => option.value),
+  );
+  assert.equal(models.OPTIONS[0]?.value, 'gpt-6-astra');
+  assert.equal(models.DEFAULT, 'gpt-5.5');
+  assert.equal((await adapter.getCurrentActiveModel()).model, 'gpt-5.5');
+});
+
+test('Codex renders a curated model in place when the catalog JSON also lists it', async () => {
+  const catalog = JSON.stringify({
+    models: [
+      {
+        slug: 'deepseek-v4-pro',
+        display_name: 'DeepSeek V4 Pro',
+      },
+      {
+        slug: 'gpt-5.6-sol',
+        display_name: 'gpt-5.6-sol',
+        description: 'raw catalog copy',
+      },
+    ],
+  });
+  const configPath = await writeTempCodexConfig(
+    [
+      'model = "gpt-5.6-sol"',
+      'model_catalog_json = "cc-switch-model-catalog.json"',
+    ].join('\n'),
+    { 'cc-switch-model-catalog.json': catalog },
+  );
+  const adapter = new CodexProviderModels(configPath);
+
+  const models = await adapter.getSupportedModels();
+
+  // The configured model is not hoisted above the catalog order, and its entry
+  // keeps the curated metadata instead of the raw catalog copy.
+  assert.equal(models.OPTIONS[0]?.value, 'deepseek-v4-pro');
+  const sol = models.OPTIONS.find((option) => option.value === 'gpt-5.6-sol');
+  assert.ok(sol);
+  assert.equal(sol.label, 'GPT-5.6 Sol');
+  assert.notEqual(sol.description, 'raw catalog copy');
+  assert.equal(
+    models.OPTIONS.filter((option) => option.value === 'gpt-5.6-sol').length,
+    1,
+  );
+  assert.equal(models.DEFAULT, 'gpt-5.6-sol');
+});
+
+test('Codex mirrors model_reasoning_effort onto a curated configured model', async () => {
+  const configPath = await writeTempCodexConfig(
+    ['model = "gpt-5.6-sol"', 'model_reasoning_effort = "xhigh"'].join('\n'),
+  );
+  const adapter = new CodexProviderModels(configPath);
+
+  const models = await adapter.getSupportedModels();
+
+  const sol = models.OPTIONS.find((option) => option.value === 'gpt-5.6-sol');
+  assert.equal(sol?.effort?.default, 'xhigh');
+});
+
 test('Codex still lists a configured model that is missing from the catalog JSON', async () => {
   const configPath = await writeTempCodexConfig(
     [
