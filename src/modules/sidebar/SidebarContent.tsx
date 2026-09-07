@@ -4,7 +4,7 @@ import type { TFunction } from 'i18next';
 
 import { ActionMenu, Dialog, DialogContent, DialogTitle, LLMProviderLogo, ScrollArea } from '@/shared/ui';
 import { cn } from '@/shared/utils';
-import type { ArchivedProjectListItem, ArchivedSessionListItem, ConversationSearchResults, LLMProvider, Project, RecentConversationListItem, ReleaseInfo, SearchProgress, SessionTitleSearchResult, SidebarProjectListProps, SidebarSearchMode } from '@/shared/types';
+import type { ArchivedProjectListItem, ArchivedSessionListItem, ConversationProjectResult, ConversationSearchResults, LLMProvider, Project, RecentConversationListItem, ReleaseInfo, SearchProgress, SessionTitleSearchResult, SidebarProjectListProps, SidebarSearchMode } from '@/shared/types';
 import { formatCompactAge, getAllSessions } from '@/modules/sidebar/utils/sidebarProjectFormatting';
 import { useCopyProviderSessionId } from '@/modules/sidebar/hooks/useCopyProviderSessionId';
 import SidebarBatchSessionActions from '@/modules/sidebar/SidebarBatchSessionActions';
@@ -64,11 +64,11 @@ function ConversationTitleResultRow({
   session: SessionTitleSearchResult;
   currentTime: Date;
   t: TFunction;
-  onOpen: (projectId: string | null, sessionId: string, provider: string) => void;
+  onOpen: (projectId: string | null, sessionId: string, provider: string, isArchived?: boolean) => void;
   onRestore?: (session: SessionTitleSearchResult) => void;
   onRename?: (sessionId: string, summary: string, provider: LLMProvider) => void;
   onTogglePinned?: (sessionId: string, isPinned: boolean) => void;
-  onDelete?: (sessionId: string, sessionTitle: string) => void;
+  onDelete?: (sessionId: string, sessionTitle: string, options?: { isArchived?: boolean }) => void;
 }) {
   const age = formatCompactAge(session.lastActivity, currentTime);
   const [isMobileOptionsOpen, setIsMobileOptionsOpen] = useState(false);
@@ -124,6 +124,16 @@ function ConversationTitleResultRow({
           icon: RotateCcw,
           onSelect: () => onRestore?.(session),
         },
+        ...(onDelete
+          ? [{
+              key: 'delete',
+              label: t('sessions.deleteSession'),
+              icon: Trash2,
+              isDanger: true,
+              showDividerBefore: true,
+              onSelect: () => onDelete(session.sessionId, session.sessionTitle, { isArchived: true }),
+            }]
+          : []),
       ]
     : [
         ...(onTogglePinned
@@ -170,7 +180,7 @@ function ConversationTitleResultRow({
           <button
             type="button"
             className="flex min-w-0 flex-1 items-center gap-2 text-left"
-            onClick={() => onOpen(session.projectId, session.sessionId, session.provider)}
+            onClick={() => onOpen(session.projectId, session.sessionId, session.provider, session.isArchived)}
           >
             <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md bg-muted/60">
               <LLMProviderLogo provider={session.provider} className="h-3.5 w-3.5" />
@@ -315,7 +325,7 @@ function ConversationTitleResultRow({
                   <span className="text-sm font-medium">{copyLabel}</span>
                 </button>
 
-                {session.isArchived && onRestore ? (
+                {session.isArchived && onRestore && (
                   <button
                     type="button"
                     onClick={() => {
@@ -327,7 +337,23 @@ function ConversationTitleResultRow({
                     <RotateCcw className="h-5 w-5 flex-shrink-0" />
                     <span className="text-sm font-medium">{t('archived.restore', 'Restore session')}</span>
                   </button>
-                ) : !session.isArchived && onDelete ? (
+                )}
+
+                {session.isArchived && onDelete && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMobileOpen(false);
+                      onDelete(session.sessionId, session.sessionTitle, { isArchived: true });
+                    }}
+                    className="flex min-h-12 w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-red-600 transition-colors active:bg-red-500/10 dark:text-red-400"
+                  >
+                    <Trash2 className="h-5 w-5 flex-shrink-0" />
+                    <span className="text-sm font-medium">{t('sessions.deleteSession')}</span>
+                  </button>
+                )}
+
+                {!session.isArchived && onDelete && (
                   <button
                     type="button"
                     onClick={() => {
@@ -339,7 +365,7 @@ function ConversationTitleResultRow({
                     <Trash2 className="h-5 w-5 flex-shrink-0" />
                     <span className="text-sm font-medium">{t('sessions.archiveOrDeleteSession')}</span>
                   </button>
-                ) : null}
+                )}
               </div>
             )}
 
@@ -362,7 +388,7 @@ function ConversationTitleResultRow({
           <button
             type="button"
             className="flex min-w-0 flex-1 items-center gap-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            onClick={() => onOpen(session.projectId, session.sessionId, session.provider)}
+            onClick={() => onOpen(session.projectId, session.sessionId, session.provider, session.isArchived)}
           >
             <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md bg-muted/60">
               <LLMProviderLogo provider={session.provider} className="h-3.5 w-3.5" />
@@ -455,6 +481,266 @@ function ConversationTitleResultRow({
   );
 }
 
+/**
+ * One conversation-content hit row: the summary plus matching message
+ * snippets. The whole body opens the session, while the trailing "..." menu
+ * offers copy/restore/delete so hits can be acted on in place.
+ */
+function ConversationContentResultRow({
+  session,
+  t,
+  onOpen,
+  onRestore,
+  onDelete,
+}: {
+  session: ConversationProjectResult['sessions'][number];
+  t: TFunction;
+  onOpen: () => void;
+  onRestore?: (sessionId: string) => void;
+  onDelete?: (sessionId: string, sessionTitle: string, options?: { isArchived?: boolean }) => void;
+}) {
+  const provider = session.provider || session.matches[0]?.provider || 'claude';
+  const providerLabel = SEARCH_PROVIDER_LABELS[provider] ?? provider;
+  const {
+    copyLabel,
+    isCopyPending,
+    CopyStateIcon,
+    handleCopyAction,
+    onOptionsOpen,
+  } = useCopyProviderSessionId({ sessionId: session.sessionId, providerLabel, t });
+  const [isMobileOptionsOpen, setIsMobileOptionsOpen] = useState(false);
+
+  const menuItems = session.isArchived
+    ? [
+        {
+          key: 'copy',
+          label: copyLabel,
+          icon: CopyStateIcon,
+          loading: isCopyPending,
+          closeOnSelect: false,
+          onSelect: handleCopyAction,
+        },
+        ...(onRestore
+          ? [{
+              key: 'restore',
+              label: t('archived.restore', 'Restore session'),
+              icon: RotateCcw,
+              onSelect: () => onRestore(session.sessionId),
+            }]
+          : []),
+        ...(onDelete
+          ? [{
+              key: 'delete',
+              label: t('sessions.deleteSession'),
+              icon: Trash2,
+              isDanger: true,
+              showDividerBefore: true,
+              onSelect: () => onDelete(session.sessionId, session.sessionSummary, { isArchived: true }),
+            }]
+          : []),
+      ]
+    : [
+        {
+          key: 'copy',
+          label: copyLabel,
+          icon: CopyStateIcon,
+          loading: isCopyPending,
+          closeOnSelect: false,
+          onSelect: handleCopyAction,
+        },
+        ...(onDelete
+          ? [{
+              key: 'delete',
+              label: t('sessions.archiveOrDeleteSession'),
+              icon: Trash2,
+              isDanger: true,
+              showDividerBefore: true,
+              onSelect: () => onDelete(session.sessionId, session.sessionSummary),
+            }]
+          : []),
+      ];
+
+  const snippetBody = (
+    <>
+      <div className="mb-1 flex items-center gap-1.5">
+        <MessageSquare className="h-3 w-3 flex-shrink-0 text-primary" />
+        <span className="truncate text-xs font-normal text-foreground">
+          {session.sessionSummary}
+        </span>
+        {session.isArchived && (
+          <span className="flex-shrink-0 rounded bg-muted px-1 py-0.5 text-[9px] font-normal leading-3 text-muted-foreground">
+            {t('search.archivedBadge', 'Archived')}
+          </span>
+        )}
+        {session.provider && session.provider !== 'claude' && (
+          <span className="flex-shrink-0 rounded bg-muted px-1 py-0.5 text-[9px] uppercase text-muted-foreground">
+            {session.provider}
+          </span>
+        )}
+      </div>
+      <div className="space-y-1 pl-4">
+        {session.matches.map((match, idx) => (
+          <div key={idx} className="flex items-start gap-1">
+            <span className="mt-0.5 flex-shrink-0 text-[10px] font-normal uppercase text-muted-foreground/60">
+              {match.role === 'user' ? 'U' : 'A'}
+            </span>
+            <HighlightedSnippet
+              snippet={match.snippet}
+              highlights={match.highlights}
+            />
+          </div>
+        ))}
+      </div>
+    </>
+  );
+
+  return (
+    <div className="group relative">
+      {/* Mobile */}
+      <div className="md:hidden">
+        <div className="flex items-start gap-1 rounded-lg px-2 py-2 hover:bg-accent/60">
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 flex-col text-left"
+            onClick={onOpen}
+          >
+            {snippetBody}
+          </button>
+          <button
+            type="button"
+            aria-label={t('sessions.sessionOptionsFor', { name: session.sessionSummary })}
+            className="ml-1 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted active:scale-95"
+            onClick={() => setIsMobileOptionsOpen(true)}
+          >
+            <MoreHorizontal className="h-4 w-4" />
+          </button>
+        </div>
+
+        <Dialog open={isMobileOptionsOpen} onOpenChange={setIsMobileOptionsOpen}>
+          <DialogContent
+            aria-describedby="mobile-search-content-options-description"
+            wrapperClassName="md:hidden"
+            style={{ bottom: 'var(--keyboard-height, 0px)' }}
+            animationClassName="animate-bottom-sheet-content-show motion-reduce:animate-none"
+            className="bottom-0 left-0 top-auto max-w-none translate-x-0 translate-y-0 rounded-b-none rounded-t-2xl border-x-0 border-b-0 px-4 pb-safe-area-inset-bottom pt-3"
+          >
+            <DialogTitle>{t('sessions.sessionOptions')}</DialogTitle>
+            <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-muted-foreground/30" aria-hidden="true" />
+
+            <div className="mb-4 flex items-center gap-3 px-1">
+              <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-muted">
+                <LLMProviderLogo provider={provider} className="h-5 w-5" />
+              </div>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-foreground" title={session.sessionSummary}>
+                  {session.sessionSummary}
+                </p>
+                <p id="mobile-search-content-options-description" className="text-xs text-muted-foreground">
+                  {t('sessions.providerSession', { provider: providerLabel })}
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={handleCopyAction}
+                disabled={isCopyPending}
+                className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-muted/35 px-4 py-3 text-left text-foreground transition-colors active:bg-muted"
+              >
+                {isCopyPending ? (
+                  <Loader2 className="h-5 w-5 flex-shrink-0 animate-spin" />
+                ) : (
+                  <CopyStateIcon className="h-5 w-5 flex-shrink-0" />
+                )}
+                <span className="text-sm font-medium">{copyLabel}</span>
+              </button>
+
+              {session.isArchived && onRestore && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMobileOptionsOpen(false);
+                    onRestore(session.sessionId);
+                  }}
+                  className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-muted/35 px-4 py-3 text-left text-emerald-700 transition-colors active:bg-emerald-500/10 dark:text-emerald-300"
+                >
+                  <RotateCcw className="h-5 w-5 flex-shrink-0" />
+                  <span className="text-sm font-medium">{t('archived.restore', 'Restore session')}</span>
+                </button>
+              )}
+
+              {onDelete && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsMobileOptionsOpen(false);
+                    onDelete(
+                      session.sessionId,
+                      session.sessionSummary,
+                      session.isArchived ? { isArchived: true } : undefined,
+                    );
+                  }}
+                  className="flex min-h-12 w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-red-600 transition-colors active:bg-red-500/10 dark:text-red-400"
+                >
+                  <Trash2 className="h-5 w-5 flex-shrink-0" />
+                  <span className="text-sm font-medium">
+                    {session.isArchived ? t('sessions.deleteSession') : t('sessions.archiveOrDeleteSession')}
+                  </span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setIsMobileOptionsOpen(false)}
+                className="mb-3 mt-2 min-h-11 w-full rounded-xl text-sm font-medium text-muted-foreground transition-colors active:bg-muted"
+              >
+                {t('actions.cancel')}
+              </button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      </div>
+
+      {/* Desktop */}
+      <div className="hidden md:block">
+        <div className="flex items-start gap-1 rounded-md px-2 py-2 transition-colors hover:bg-accent/50">
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 flex-col text-left"
+            onClick={onOpen}
+          >
+            {snippetBody}
+          </button>
+          <ActionMenu
+            label={t('sessions.sessionOptions')}
+            ariaLabel={t('sessions.sessionOptionsFor', { name: session.sessionSummary })}
+            icon={MoreHorizontal}
+            iconOnly
+            portal
+            variant="ghost"
+            size="icon"
+            onOpenChange={onOptionsOpen}
+            triggerClassName="h-7 w-7 text-muted-foreground opacity-70 hover:bg-muted hover:opacity-100"
+            menuClassName="w-[260px] rounded-xl p-1.5 shadow-xl"
+            header={(
+              <div className="mb-1 border-b border-border px-3 py-2">
+                <p className="truncate text-xs font-medium text-foreground" title={session.sessionSummary}>
+                  {session.sessionSummary}
+                </p>
+                <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  {t('sessions.providerSession', { provider: providerLabel })}
+                </p>
+              </div>
+            )}
+            items={menuItems}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 type ArchivedSessionGroup = {
   key: string;
   projectId: string | null;
@@ -538,7 +824,7 @@ type SidebarContentProps = {
   onDeleteArchivedSession: (session: ArchivedSessionListItem) => void;
   // Conversation result clicks pass back the DB projectId (or null when the
   // server couldn't resolve it). Consumers must handle the null case.
-  onConversationResultClick: (projectId: string | null, sessionId: string, provider: string, messageTimestamp?: string | null, messageSnippet?: string | null) => void;
+  onConversationResultClick: (projectId: string | null, sessionId: string, provider: string, messageTimestamp?: string | null, messageSnippet?: string | null, isArchived?: boolean) => void;
   /** Renames a session reached from the recent-conversations list. */
   onRenameRecentSession: (sessionId: string, summary: string, provider: LLMProvider) => void;
   onToggleSessionPinned: (sessionId: string, isPinned: boolean) => void;
@@ -616,6 +902,17 @@ export default function SidebarContent({
   const visibleTitleResults = conversationResults
     ? conversationResults.titleResults.filter((session) => !restoredSearchSessionIds.has(session.sessionId))
     : [];
+  // Restored hits drop out of both search-hit sections (conversation titles
+  // and content groups) locally; the restore callback refreshes the active and
+  // archived lists behind the scenes.
+  const visibleResults = conversationResults
+    ? conversationResults.results
+        .map((project) => ({
+          ...project,
+          sessions: project.sessions.filter((session) => !restoredSearchSessionIds.has(session.sessionId)),
+        }))
+        .filter((project) => project.sessions.length > 0)
+    : [];
   // Shared by both search-hit sections (conversation titles and the
   // projects-mode id lookup): the row drops out locally and the restore
   // callback refreshes the active and archived lists.
@@ -623,10 +920,14 @@ export default function SidebarContent({
     setRestoredSearchSessionIds((previous) => new Set(previous).add(session.sessionId));
     onRestoreArchivedSession(session.sessionId);
   }, [onRestoreArchivedSession]);
+  const restoreContentSearchHit = useCallback((sessionId: string) => {
+    setRestoredSearchSessionIds((previous) => new Set(previous).add(sessionId));
+    onRestoreArchivedSession(sessionId);
+  }, [onRestoreArchivedSession]);
 
   const hasSearchResults = Boolean(
     conversationResults
-      && ((visibleTitleResults.length > 0) || conversationResults.results.length > 0),
+      && ((visibleTitleResults.length > 0) || visibleResults.length > 0),
   );
   const groupedArchivedSessions = groupArchivedSessionsByProject(archivedSessions);
   const visibleArchivedItemsCount = archivedProjects.length + archivedSessions.length;
@@ -701,7 +1002,7 @@ export default function SidebarContent({
   // it resets on every new query or search-mode change.
   const [searchGroupOverrides, setSearchGroupOverrides] = useState<Set<string>>(new Set());
   const [expandedArchivedGroupKeys, setExpandedArchivedGroupKeys] = useState<Set<string>>(new Set());
-  const searchProjectKeys = (conversationResults?.results ?? []).map(
+  const searchProjectKeys = visibleResults.map(
     (projectResult) => projectResult.projectId ?? projectResult.projectName,
   );
   const isSearchGroupExpanded = (projectKey: string): boolean => (
@@ -829,7 +1130,9 @@ export default function SidebarContent({
                       session={session}
                       currentTime={projectListProps.currentTime}
                       t={t}
-                      onOpen={onConversationResultClick}
+                      onOpen={(projectId, sessionId, provider, isArchived) =>
+                        onConversationResultClick(projectId, sessionId, provider, undefined, undefined, isArchived)
+                      }
                       onRestore={restoreSearchHit}
                       onRename={onRenameRecentSession}
                       onTogglePinned={onToggleSessionPinned}
@@ -839,7 +1142,7 @@ export default function SidebarContent({
                 </section>
               )}
 
-              {(conversationResults.results.length > 0 || isSearching) && (
+              {(visibleResults.length > 0 || isSearching) && (
                 <section className="space-y-3" aria-labelledby="conversation-content-results-heading">
                   <div className="flex items-center justify-between px-1 py-0.5">
                     <h3
@@ -891,7 +1194,7 @@ export default function SidebarContent({
                     </div>
                   )}
 
-                  {conversationResults.results.map((projectResult) => {
+                  {visibleResults.map((projectResult) => {
                     const projectKey = projectResult.projectId ?? projectResult.projectName;
                     const groupExpanded = isSearchGroupExpanded(projectKey);
 
@@ -918,44 +1221,23 @@ export default function SidebarContent({
                         </button>
 
                         {groupExpanded && projectResult.sessions.map((session) => (
-                          <button
+                          <ConversationContentResultRow
                             key={`${projectResult.projectId ?? projectResult.projectName}-${session.sessionId}`}
-                            className="w-full rounded-md px-2 py-2 text-left transition-colors hover:bg-accent/50"
-                            onClick={() => onConversationResultClick(
+                            session={session}
+                            t={t}
+                            onOpen={() => onConversationResultClick(
                               // Pass the DB projectId (preferred) so the parent can
                               // cross-reference with the loaded projects list.
                               projectResult.projectId,
                               session.sessionId,
                               session.provider || session.matches[0]?.provider || 'claude',
                               session.matches[0]?.timestamp,
-                              session.matches[0]?.snippet
+                              session.matches[0]?.snippet,
+                              session.isArchived
                             )}
-                          >
-                            <div className="mb-1 flex items-center gap-1.5">
-                              <MessageSquare className="h-3 w-3 flex-shrink-0 text-primary" />
-                              <span className="truncate text-xs font-normal text-foreground">
-                                {session.sessionSummary}
-                              </span>
-                              {session.provider && session.provider !== 'claude' && (
-                                <span className="flex-shrink-0 rounded bg-muted px-1 py-0.5 text-[9px] uppercase text-muted-foreground">
-                                  {session.provider}
-                                </span>
-                              )}
-                            </div>
-                            <div className="space-y-1 pl-4">
-                              {session.matches.map((match, idx) => (
-                                <div key={idx} className="flex items-start gap-1">
-                                  <span className="mt-0.5 flex-shrink-0 text-[10px] font-normal uppercase text-muted-foreground/60">
-                                    {match.role === 'user' ? 'U' : 'A'}
-                                  </span>
-                                  <HighlightedSnippet
-                                    snippet={match.snippet}
-                                    highlights={match.highlights}
-                                  />
-                                </div>
-                              ))}
-                            </div>
-                          </button>
+                            onRestore={restoreContentSearchHit}
+                            onDelete={projectListProps.onDeleteSession}
+                          />
                         ))}
                       </div>
                     );

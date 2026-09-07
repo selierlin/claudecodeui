@@ -70,7 +70,7 @@
     "removeFromFavorites": "Удалить из избранного",
     "editSessionName": "Вручную редактировать имя сеанса",
     "deleteSession": "Удалить этот сеанс навсегда",
-    "activeSessionIndicator": "Недавно активный сеанс (последние 10 минут)",
+    "activeSessionIndicator": "Недавно активный сеанс (последние 2 минуты)",
     "save": "Сохранить",
     "cancel": "Отмена",
     "clearSearch": "Очистить поиск",

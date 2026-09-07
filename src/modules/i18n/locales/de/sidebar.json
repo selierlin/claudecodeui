@@ -70,7 +70,7 @@
     "removeFromFavorites": "Aus Favoriten entfernen",
     "editSessionName": "Sitzungsname manuell bearbeiten",
     "deleteSession": "Diese Sitzung dauerhaft löschen",
-    "activeSessionIndicator": "Kürzlich aktive Sitzung (letzte 10 Minuten)",
+    "activeSessionIndicator": "Kürzlich aktive Sitzung (letzte 2 Minuten)",
     "save": "Speichern",
     "cancel": "Abbrechen",
     "clearSearch": "Suche leeren",

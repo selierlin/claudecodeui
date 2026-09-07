@@ -8,6 +8,7 @@ import { useSidebarController } from '@/modules/sidebar/hooks/useSidebarControll
 import { useTaskMaster, useTasksSettings } from '@/modules/task-master';
 import { usePaletteOps } from '@/modules/command-palette';
 import { useBusySessionIdSet } from '@/shared/context/SessionProtectionContext';
+import { getPageTitle } from '@/shared/utils';
 import type { LLMProvider, LoadingProgress, MCPServerStatus, Project, ProjectSession, SidebarProjectListProps } from '@/shared/types';
 import SidebarCollapsed from '@/modules/sidebar/SidebarCollapsed';
 import SidebarContent from '@/modules/sidebar/SidebarContent';
@@ -177,6 +178,17 @@ function Sidebar({
     document.body.classList.toggle('pwa-mode', isPWA);
   }, [isPWA]);
 
+  // The browser tab title follows the current selection. It lives here, at the
+  // sidebar root, rather than inside a single list component, so switching a
+  // session from any view (projects, recent conversations, running) updates it.
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return;
+    }
+
+    document.title = getPageTitle(selectedProject, selectedSession);
+  }, [selectedProject, selectedSession]);
+
   const handleProjectCreated = () => {
     void paletteOps.refreshProjects();
   };
@@ -328,13 +340,19 @@ function Sidebar({
                 { isArchived: true },
               );
             }}
-            onConversationResultClick={(projectId: string | null, sessionId: string, provider: string, messageTimestamp?: string | null, messageSnippet?: string | null) => {
+            onConversationResultClick={(projectId: string | null, sessionId: string, provider: string, messageTimestamp?: string | null, messageSnippet?: string | null, isArchived?: boolean) => {
               // `projectId` (DB key) is the canonical identifier post-migration.
               // The server emits null when it can't resolve a project row for
               // the search hit; treat that as "no project" and still navigate
               // to the session so the user can open it from the URL.
               const resolvedProvider = (provider || 'claude') as LLMProvider;
-              const project = projectId ? projects.find(p => p.projectId === projectId) : null;
+              let project = projectId ? projects.find(p => p.projectId === projectId) : null;
+              // Archived hits whose owning project is itself archived don't
+              // appear in the active project list; resolve them from the
+              // archive so the opened session keeps its project context.
+              if (!project && isArchived && projectId) {
+                project = archivedProjects.find(p => p.projectId === projectId) ?? null;
+              }
               const searchTarget = { __searchTargetTimestamp: messageTimestamp || null, __searchTargetSnippet: messageSnippet || null };
               const sessionObj = {
                 id: sessionId,

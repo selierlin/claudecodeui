@@ -152,21 +152,22 @@ export function useSidebarController({
   }, [projects]);
 
   useEffect(() => {
-    // Auto-expand only when the selected project identity changes.
-    // Depending on the full `selectedProject` object (or `selectedSession`) causes
-    // websocket-driven list refreshes to re-open projects users manually collapsed.
+    // Auto-expand the newly selected project and collapse the rest, matching
+    // `toggleProject`'s accordion behavior so cross-project session navigation
+    // from the conversations view cannot accumulate several expanded projects.
+    // Depending on the full `selectedProject` object (or `selectedSession`)
+    // causes websocket-driven list refreshes to re-open projects users
+    // manually collapsed.
     const selectedProjectId = selectedProject?.projectId;
     if (!selectedProjectId) {
       return;
     }
 
     setExpandedProjects((prev) => {
-      if (prev.has(selectedProjectId)) {
+      if (prev.size === 1 && prev.has(selectedProjectId)) {
         return prev;
       }
-      const next = new Set(prev);
-      next.add(selectedProjectId);
-      return next;
+      return new Set([selectedProjectId]);
     });
   }, [selectedProject?.projectId]);
 
@@ -900,6 +901,24 @@ export function useSidebarController({
 
       if (response.ok) {
         onSessionDelete?.(sessionId);
+        // A deleted session must also leave the frozen conversation-search
+        // results, otherwise the row lingers with a stale archived badge until
+        // the next query.
+        setConversationResults((previous) => {
+          if (!previous) {
+            return previous;
+          }
+          return {
+            ...previous,
+            titleResults: previous.titleResults.filter((result) => result.sessionId !== sessionId),
+            results: previous.results
+              .map((project) => ({
+                ...project,
+                sessions: project.sessions.filter((session) => session.sessionId !== sessionId),
+              }))
+              .filter((project) => project.sessions.length > 0),
+          };
+        });
         await fetchArchivedSessions();
         // Reload so a deleted/archived conversation leaves the Recent
         // conversations list immediately instead of lingering until refresh.

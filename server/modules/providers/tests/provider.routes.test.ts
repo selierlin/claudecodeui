@@ -283,6 +283,83 @@ test('conversation search finds renamed sessions by either session id column', a
   });
 });
 
+test('conversation search finds archived sessions by transcript content and flags them', async () => {
+  await withProviderServer(async (baseUrl, workspacePath) => {
+    // Standalone archived session: the owning project stays active.
+    const standaloneTranscriptPath = path.join(path.dirname(workspacePath), 'archived-standalone.jsonl');
+    await writeFile(standaloneTranscriptPath, `${JSON.stringify({
+      type: 'event_msg',
+      timestamp: '2026-08-12T09:00:00.000Z',
+      payload: { type: 'user_message', kind: 'plain', message: 'The real peak load reached 9000.' },
+    })}\n`);
+    sessionsDb.createSession('archived-standalone', 'codex', workspacePath, 'Archived standalone', undefined, undefined, standaloneTranscriptPath);
+    sessionsDb.updateSessionIsArchived('archived-standalone', true);
+
+    // Session whose owning project is itself archived.
+    const archivedProjectPath = path.join(path.dirname(workspacePath), 'archived-project');
+    const archivedProjectTranscriptPath = path.join(path.dirname(workspacePath), 'archived-project-session.jsonl');
+    await writeFile(archivedProjectTranscriptPath, `${JSON.stringify({
+      type: 'event_msg',
+      timestamp: '2026-08-12T10:00:00.000Z',
+      payload: { type: 'user_message', kind: 'plain', message: 'Real peak usage in the archived project.' },
+    })}\n`);
+    sessionsDb.createSession('archived-project-session', 'codex', archivedProjectPath, 'Archived project session', undefined, undefined, archivedProjectTranscriptPath);
+    projectsDb.updateProjectIsArchived(archivedProjectPath, true);
+
+    const contentResponse = await fetch(
+      `${baseUrl}/api/providers/search/sessions?q=${encodeURIComponent('real peak')}&limit=50`,
+    );
+    const contentStream = await contentResponse.text();
+    assert.equal(contentResponse.status, 200);
+
+    const contentSessionsById = new Map<string, { isArchived?: boolean }>();
+    const contentLines = contentStream.split('\n');
+    for (let idx = 0; idx < contentLines.length; idx += 1) {
+      if (contentLines[idx] !== 'event: result') continue;
+      const dataLine = contentLines[idx + 1];
+      if (!dataLine || !dataLine.startsWith('data: ')) continue;
+      try {
+        const payload = JSON.parse(dataLine.slice('data: '.length)) as {
+          projectResult: { sessions: Array<{ sessionId: string; isArchived?: boolean }> };
+        };
+        for (const session of payload.projectResult.sessions) {
+          contentSessionsById.set(session.sessionId, session);
+        }
+      } catch {
+        // Ignore malformed lines.
+      }
+    }
+
+    const standaloneHit = contentSessionsById.get('archived-standalone');
+    const projectHit = contentSessionsById.get('archived-project-session');
+    assert.ok(standaloneHit, 'standalone archived session should be found by content');
+    assert.equal(standaloneHit?.isArchived, true);
+    assert.ok(projectHit, 'session under an archived project should be found by content');
+    assert.equal(projectHit?.isArchived, true);
+
+    // Title search also surfaces the archived-project session with the flag.
+    const titleResponse = await fetch(
+      `${baseUrl}/api/providers/search/sessions?q=${encodeURIComponent('Archived project session')}&limit=50`,
+    );
+    const titleStream = await titleResponse.text();
+    const titleEventIndex = titleStream.indexOf('event: title-results');
+    assert.ok(titleEventIndex >= 0);
+    const titleDataLine = titleStream
+      .slice(titleEventIndex)
+      .split('\n')
+      .find((line) => line.startsWith('data: '));
+    assert.ok(titleDataLine);
+    const titlePayload = JSON.parse(titleDataLine.slice('data: '.length)) as {
+      titleResults: Array<{ sessionId: string; isArchived?: boolean }>;
+    };
+    const projectTitleHit = titlePayload.titleResults.find(
+      (result) => result.sessionId === 'archived-project-session',
+    );
+    assert.ok(projectTitleHit, 'session under an archived project should be found by title');
+    assert.equal(projectTitleHit?.isArchived, true);
+  });
+});
+
 test('reasoning effort is persisted and returned with the active session model', async () => {
   await withProviderServer(async (baseUrl, workspacePath) => {
     sessionsDb.createAppSession('effort-session', 'codex', workspacePath);

@@ -1,4 +1,4 @@
-const COMPLETION_TITLE_INDICATOR = '[Done]';
+const COMPLETION_TITLE_INDICATOR = '✅';
 const TITLE_INDICATOR_CLEAR_DELAY_MS = 2000;
 
 let clearTimer: number | null = null;

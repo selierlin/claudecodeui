@@ -1315,7 +1315,7 @@ export type SidebarProjectListProps = {
   onSaveProjectName: (projectId: string, nextName: string) => void;
   onDeleteProject: (project: Project) => void;
   onSessionSelect: (session: SessionWithProvider, projectName: string) => void;
-  onDeleteSession: (sessionId: string, sessionTitle: string) => void;
+  onDeleteSession: (sessionId: string, sessionTitle: string, options?: { isArchived?: boolean }) => void;
   /** Branches a session into an independent one. Rows hide it for providers that cannot. */
   onForkSession?: (session: SessionWithProvider) => void;
   /** Pins or unpins one active session; rows surface it from their options menu. */
@@ -1466,6 +1466,8 @@ type ConversationSession = {
   sessionId: string;
   sessionSummary: string;
   provider?: string;
+  /** True when the hit is an archived session; the sidebar renders an archived badge for it. */
+  isArchived?: boolean;
   matches: ConversationMatch[];
 };
 

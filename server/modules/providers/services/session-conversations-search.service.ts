@@ -28,6 +28,7 @@ type SessionConversationResult = {
   sessionId: string;
   provider: SearchableProvider;
   sessionSummary: string;
+  isArchived: boolean;
   matches: SessionConversationMatch[];
 };
 
@@ -66,9 +67,10 @@ type SearchSessionConversationsInput = {
 };
 
 type SessionRepositoryRow = ReturnType<typeof sessionsDb.getAllSessions>[number];
-type SearchableSessionRow = SessionRepositoryRow & {
+type SearchableSessionRow = Omit<SessionRepositoryRow, 'isArchived'> & {
   provider: SearchableProvider;
   jsonl_path: string;
+  isArchived: boolean;
 };
 
 type SearchRuntime = {
@@ -170,12 +172,12 @@ function toSummaryText(customName: string | null, fallback: string | null | unde
 }
 
 /**
- * Finds visible sessions whose displayed title or session ids contain the
- * query. Title matches are resolved from the database before transcript
- * scanning so the UI can always present them first, including sessions without
- * a transcript yet. Archived sessions are searched through the same matcher
- * and flagged with `isArchived` so the UI can badge them; sessions belonging
- * to an archived project stay hidden in both cases.
+ * Finds sessions whose displayed title or session ids contain the query.
+ * Title matches are resolved from the database before transcript scanning so
+ * the UI can always present them first, including sessions without a
+ * transcript yet. Archived sessions — standalone or belonging to an archived
+ * project — are searched through the same matcher and flagged with
+ * `isArchived` so the UI can badge them.
  */
 function findSessionTitleResults(
   sessions: SessionRepositoryRow[],
@@ -218,9 +220,6 @@ function findSessionTitleResults(
       }
 
       const project = projectCache.get(projectKey) ?? null;
-      if (project?.isArchived) {
-        return [];
-      }
 
       return [{
         sessionId: session.session_id,
@@ -231,7 +230,7 @@ function findSessionTitleResults(
           : 'Unknown Project',
         sessionTitle,
         lastActivity: session.updated_at || session.created_at || null,
-        isArchived,
+        isArchived: isArchived || Boolean(project?.isArchived),
         isPinned: Boolean(session.isPinned),
         matchIndex,
       }];
@@ -567,15 +566,15 @@ function normalizeSearchableSessions(rows: SessionRepositoryRow[]): SearchableSe
     }
 
     /**
-     * Active session rows can still belong to an archived project because
-     * project archiving intentionally preserves the underlying session data.
-     * Global conversation search should follow the visible workspace model,
-     * which means excluding any session whose owning project is archived.
+     * A session counts as archived when either its own row or its owning
+     * project is archived. Archived sessions stay searchable and carry the
+     * flag so the UI can badge them alongside active matches.
      *
      * Cache the archive lookup per normalized project path so one search pass
      * does not re-query the same project row for every session in that folder.
      */
     const normalizedProjectPath = typeof row.project_path === 'string' ? row.project_path.trim() : '';
+    let isArchived = row.isArchived === 1;
     if (normalizedProjectPath) {
       if (!projectArchiveStateByPath.has(normalizedProjectPath)) {
         const projectRow = projectsDb.getProjectPath(normalizedProjectPath);
@@ -583,7 +582,7 @@ function normalizeSearchableSessions(rows: SessionRepositoryRow[]): SearchableSe
       }
 
       if (projectArchiveStateByPath.get(normalizedProjectPath) === true) {
-        continue;
+        isArchived = true;
       }
     }
 
@@ -591,6 +590,7 @@ function normalizeSearchableSessions(rows: SessionRepositoryRow[]): SearchableSe
       ...row,
       provider,
       jsonl_path: absoluteJsonlPath,
+      isArchived,
     });
   }
 
@@ -884,10 +884,12 @@ async function parseClaudeSessionMatches(
     // internal `session_id` the rest of the app uses to identify sessions.
     const providerToInternalId = new Map<string, string>();
     const customNameBySessionId = new Map<string, string | null>();
+    const isArchivedBySessionId = new Map<string, boolean>();
     for (const candidate of targetSessions) {
       const providerId = candidate.provider_session_id || candidate.session_id;
       providerToInternalId.set(providerId, candidate.session_id);
       customNameBySessionId.set(providerId, candidate.custom_name ?? null);
+      isArchivedBySessionId.set(providerId, candidate.isArchived);
     }
     const targetSessionIds = new Set(providerToInternalId.keys());
 
@@ -1019,6 +1021,7 @@ async function parseClaudeSessionMatches(
           state.resolvedSummary || state.fallbackUserText || state.fallbackAssistantText,
           'New Session',
         ),
+        isArchived: isArchivedBySessionId.get(sessionId) ?? false,
         matches: state.matches,
       });
     }
@@ -1145,6 +1148,7 @@ async function parseCodexSessionMatches(
     sessionId: session.session_id,
     provider: 'codex',
     sessionSummary: toSummaryText(session.custom_name, latestUserMessageText, 'Codex Session'),
+    isArchived: session.isArchived,
     matches,
   };
 }
@@ -1196,7 +1200,7 @@ export async function searchConversations(
   const titleResults = findSessionTitleResults(activeSessions, archivedSessions, safeQuery, safeLimit);
   onTitleResults?.(titleResults);
 
-  const searchableSessions = normalizeSearchableSessions(activeSessions);
+  const searchableSessions = normalizeSearchableSessions([...activeSessions, ...archivedSessions]);
   if (searchableSessions.length === 0) {
     return { results: [], titleResults, totalMatches: 0, query: safeQuery };
   }
