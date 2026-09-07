@@ -326,13 +326,20 @@ test('synchronizeFile indexes one transcript by path', async () => {
   });
 });
 
-test('synchronizer skips transient WorkBuddy timestamp workspaces and keeps others', async () => {
+test('synchronizer skips transient WorkBuddy timestamp and automation workspaces and keeps others', async () => {
   await withIsolatedEnvironment(async (homeDir) => {
     const transientCwd = path.join(homeDir, 'WorkBuddy', '2026-08-24-00-13-24');
     const transientId = 'wb-transient';
     await writeSessionFile(homeDir, '.workbuddy', transientCwd, transientId, [
       makeUserMessage(transientId, transientCwd, 'Transient prompt', 1_700_000_000_000),
       makeAiTitle(transientId, transientCwd, 'Transient title'),
+    ]);
+
+    const automationCwd = path.join(homeDir, 'WorkBuddy', 'automation-2026-08-24-00-13-24');
+    const automationId = 'wb-automation';
+    await writeSessionFile(homeDir, '.workbuddy', automationCwd, automationId, [
+      makeUserMessage(automationId, automationCwd, 'Automation prompt', 1_700_000_050_000),
+      makeAiTitle(automationId, automationCwd, 'Automation title'),
     ]);
 
     const clawCwd = path.join(homeDir, 'WorkBuddy', 'Claw');
@@ -347,6 +354,7 @@ test('synchronizer skips transient WorkBuddy timestamp workspaces and keeps othe
 
     assert.equal(processed, 1);
     assert.equal(sessionsDb.getSessionById(transientId), null);
+    assert.equal(sessionsDb.getSessionById(automationId), null);
     assert.equal(sessionsDb.getSessionById(clawId)?.custom_name, 'Claw title');
   });
 });

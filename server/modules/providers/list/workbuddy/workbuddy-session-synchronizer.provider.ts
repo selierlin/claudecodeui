@@ -164,12 +164,13 @@ export class WorkbuddySessionSynchronizer implements IProviderSessionSynchronize
 
   /**
    * Skips transient sessions the WorkBuddy desktop app creates in a fresh
-   * `~/WorkBuddy/<yyyy-mm-dd-hh-mm-ss>` scratch directory on every open.
-   * Those are throwaway workspaces, not real projects, so their sessions must
-   * never surface in the app.
+   * `~/WorkBuddy/<yyyy-mm-dd-hh-mm-ss>` scratch directory on every open, plus
+   * the `automation-<yyyy-mm-dd-hh-mm-ss>` workspaces its automation runner
+   * spawns. Both are throwaway workspaces, not real projects, so their
+   * sessions must never surface in the app.
    */
   private isTransientWorkBuddyWorkspace(cwd: string): boolean {
-    return /\/WorkBuddy\/\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}$/.test(cwd);
+    return /\/WorkBuddy\/(?:automation-)?\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2}$/.test(cwd);
   }
 
   private async processSessionFile(
