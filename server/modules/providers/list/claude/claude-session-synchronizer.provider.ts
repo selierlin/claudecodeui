@@ -20,6 +20,27 @@ type ParsedSession = {
   sessionNameSource?: SessionNameSource;
 };
 
+type ClaudeTitleMetadata = {
+  name: string;
+  source: SessionNameSource;
+  /** The newest `last-prompt` value, retained for legacy title matching. */
+  lastPrompt?: string;
+};
+
+type BackfillNameSourceResult = {
+  sessionId: string;
+  providerSessionId: string;
+  previousName: string | null;
+  nextName: string | null;
+  source: SessionNameSource | null;
+  action:
+    | 'updated'
+    | 'source_only'
+    | 'skipped_ambiguous'
+    | 'skipped_missing_transcript'
+    | 'skipped_no_ai_or_custom_title';
+};
+
 /**
  * Session indexer for Claude transcript artifacts.
  */
@@ -220,13 +241,15 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
 
   private async extractSessionAiTitleFromEnd(
     filePath: string,
-    sessionId: string
-  ): Promise<{ name: string; source: SessionNameSource } | undefined> {
+    sessionId: string,
+    includeLastPrompt = false
+  ): Promise<ClaudeTitleMetadata | undefined> {
     try {
       const content = await readFile(filePath, 'utf8');
       const lines = content.split(/\r?\n/);
 
       let aiTitle: string | undefined;
+      let customTitle: string | undefined;
       let lastPrompt: string | undefined;
 
       for (let index = lines.length - 1; index >= 0; index -= 1) {
@@ -253,10 +276,18 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
           continue;
         }
 
-        // A `/rename` title is the strongest on-disk signal, so return the
-        // newest such event immediately when scanning backwards.
+        // A `/rename` title is the strongest on-disk signal. Without a caller
+        // that needs `last-prompt`, return it immediately; the backfill pass
+        // opts into the full scan so it can still match legacy last-prompt
+        // titles against the current name.
         if (eventType === 'custom-title' && claudeRenamedTitle?.trim()) {
-          return { name: claudeRenamedTitle, source: 'claude_custom_title' };
+          if (!includeLastPrompt) {
+            return { name: claudeRenamedTitle, source: 'claude_custom_title' };
+          }
+          if (customTitle === undefined) {
+            customTitle = claudeRenamedTitle;
+          }
+          continue;
         }
         if (eventType === 'ai-title' && eventAiTitle?.trim() && aiTitle === undefined) {
           aiTitle = eventAiTitle;
@@ -266,11 +297,14 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
         }
       }
 
+      if (customTitle) {
+        return { name: customTitle, source: 'claude_custom_title', lastPrompt };
+      }
       if (aiTitle) {
-        return { name: aiTitle, source: 'claude_ai_title' };
+        return { name: aiTitle, source: 'claude_ai_title', lastPrompt };
       }
       if (lastPrompt) {
-        return { name: lastPrompt, source: 'claude_last_prompt' };
+        return { name: lastPrompt, source: 'claude_last_prompt', lastPrompt };
       }
     } catch {
       // Ignore missing/unreadable files so sync can continue.
@@ -300,6 +334,103 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       return undefined;
     }
   }
+
+  /**
+   * Backfills the title source for legacy Claude rows whose provenance was
+   * never recorded.
+   *
+   * The synchronizer intentionally leaves `legacy_unknown` rows untouched, but
+   * this one-off pass can safely upgrade rows whose current title still equals
+   * a value the old indexer would have produced. It only accepts
+   * `ai-title`/`custom-title` targets; `last-prompt` is retained solely for
+   * matching legacy candidates, not as a backfill target.
+   */
+  async backfillLegacyNameSources(
+    options: { apply?: boolean } = {}
+  ): Promise<BackfillNameSourceResult[]> {
+    const nameMap = await buildLookupMap(path.join(this.claudeHome, 'history.jsonl'), 'sessionId', 'display');
+    const rows = [...sessionsDb.getAllSessions(), ...sessionsDb.getArchivedSessions()].filter(
+      (row) => row.provider === this.provider && row.name_source === 'legacy_unknown'
+    );
+    const results: BackfillNameSourceResult[] = [];
+
+    for (const row of rows) {
+      const providerSessionId = row.provider_session_id ?? row.session_id;
+      const filePath = row.jsonl_path
+        ?? await this.resolveTranscriptPath(providerSessionId, row.project_path ?? '');
+      if (!filePath) {
+        results.push({
+          sessionId: row.session_id,
+          providerSessionId,
+          previousName: row.custom_name,
+          nextName: null,
+          source: null,
+          action: 'skipped_missing_transcript',
+        });
+        continue;
+      }
+
+      const providerTitle = await this.extractSessionAiTitleFromEnd(filePath, providerSessionId, true);
+      if (
+        !providerTitle
+        || (providerTitle.source !== 'claude_ai_title' && providerTitle.source !== 'claude_custom_title')
+      ) {
+        results.push({
+          sessionId: row.session_id,
+          providerSessionId,
+          previousName: row.custom_name,
+          nextName: null,
+          source: null,
+          action: 'skipped_no_ai_or_custom_title',
+        });
+        continue;
+      }
+
+      const existingName = normalizeSessionName(row.custom_name ?? undefined, 'Untitled Claude Session');
+      const nextName = normalizeSessionName(providerTitle.name, 'Untitled Claude Session');
+      const firstUserMessage = await this.extractFirstUserMessage(filePath, providerSessionId);
+      const legacyCandidates = [
+        nameMap.get(providerSessionId),
+        firstUserMessage,
+        firstUserMessage ? buildClaudeSessionNamePrefix(firstUserMessage) : undefined,
+        providerTitle.lastPrompt,
+      ];
+      const matchesLegacyCandidate = legacyCandidates.some(
+        (candidate) => typeof candidate === 'string'
+          && normalizeSessionName(candidate, 'Untitled Claude Session') === existingName
+      );
+      const isLegacyAutoTitle = !row.custom_name
+        || existingName === 'Untitled Claude Session'
+        || matchesLegacyCandidate;
+
+      if (!isLegacyAutoTitle && nextName !== existingName) {
+        results.push({
+          sessionId: row.session_id,
+          providerSessionId,
+          previousName: row.custom_name,
+          nextName,
+          source: providerTitle.source,
+          action: 'skipped_ambiguous',
+        });
+        continue;
+      }
+
+      const action = nextName === existingName ? 'source_only' : 'updated';
+      if (options.apply) {
+        sessionsDb.updateSessionCustomName(row.session_id, nextName, providerTitle.source);
+      }
+      results.push({
+        sessionId: row.session_id,
+        providerSessionId,
+        previousName: row.custom_name,
+        nextName,
+        source: providerTitle.source,
+        action,
+      });
+    }
+
+    return results;
+  }
 }
 
 /**
@@ -316,6 +447,15 @@ function shouldPreserveExistingClaudeName(source: SessionNameSource): boolean {
     || source === 'claude_custom_title'
     || source === 'fork'
     || source === 'legacy_unknown';
+}
+
+/**
+ * Produces the four-word prefix that `sessionsService.createAppSession` used
+ * for legacy app-created sessions, so a backfill can recognise that shape as
+ * an automatic title rather than a manual rename.
+ */
+function buildClaudeSessionNamePrefix(value: string): string {
+  return value.trim().split(/\s+/).filter(Boolean).slice(0, 4).join(' ');
 }
 
 /**

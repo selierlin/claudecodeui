@@ -11,11 +11,13 @@ import {
   readFileTimestamps,
 } from '@/shared/utils.js';
 import type { IProviderSessionSynchronizer } from '@/shared/interfaces.js';
+import type { SessionNameSource } from '@/shared/types.js';
 
 type ParsedSession = {
   sessionId: string;
   projectPath: string;
   sessionName?: string;
+  sessionNameSource?: SessionNameSource;
 };
 
 /**
@@ -43,15 +45,6 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
         continue;
       }
 
-      const existingSession = sessionsDb.getSessionByProviderSessionId(parsed.sessionId)
-        ?? sessionsDb.getSessionById(parsed.sessionId);
-      if (existingSession) {
-        // If session name is untitled and we now have a name, update it
-        if (existingSession.custom_name === 'Untitled Codex Session' && parsed.sessionName && parsed.sessionName !== 'Untitled Codex Session') {
-          sessionsDb.updateSessionCustomName(existingSession.session_id, parsed.sessionName, 'provider_title');
-        }
-      }
-
       const timestamps = await readFileTimestamps(filePath);
       sessionsDb.createSession(
         parsed.sessionId,
@@ -60,7 +53,8 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
         parsed.sessionName,
         timestamps.createdAt,
         timestamps.updatedAt,
-        filePath
+        filePath,
+        parsed.sessionNameSource ?? 'provider_title'
       );
       processed += 1;
     }
@@ -90,7 +84,8 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       parsed.sessionName,
       timestamps.createdAt,
       timestamps.updatedAt,
-      filePath
+      filePath,
+      parsed.sessionNameSource ?? 'provider_title'
     );
   }
 
@@ -136,21 +131,53 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
     const existingSession = sessionsDb.getSessionByProviderSessionId(parsed.sessionId)
       ?? sessionsDb.getSessionById(parsed.sessionId);
     const existingSessionName = existingSession?.custom_name;
+    const existingSource = existingSession?.name_source ?? 'legacy_unknown';
+
+    // Authoritative sources (manual renames, forks and legacy rows) are frozen:
+    // a routine re-scan must not overwrite them, even when a thread_name shows
+    // up later. Weaker sources are re-evaluated on every sync so a late codex
+    // AI title (thread_name in session_index.jsonl) can still win.
+    if (
+      existingSessionName
+      && existingSessionName !== 'Untitled Codex Session'
+      && shouldPreserveExistingCodexName(existingSource)
+    ) {
+      return {
+        ...parsed,
+        sessionName: normalizeSessionName(existingSessionName, 'Untitled Codex Session'),
+        sessionNameSource: existingSource,
+      };
+    }
+
+    const providerTitle = nameMap.get(parsed.sessionId);
+    if (providerTitle) {
+      return {
+        ...parsed,
+        sessionName: normalizeSessionName(providerTitle, 'Untitled Codex Session'),
+        sessionNameSource: 'provider_title',
+      };
+    }
+
+    // No AI title available yet: keep the existing non-authoritative name
+    // (e.g. the initial-message title CloudCLI assigned when creating the
+    // session) instead of downgrading it to "Untitled Codex Session".
     if (existingSessionName && existingSessionName !== 'Untitled Codex Session') {
       return {
         ...parsed,
         sessionName: normalizeSessionName(existingSessionName, 'Untitled Codex Session'),
+        sessionNameSource: existingSource,
       };
     }
 
-    let sessionName = nameMap.get(parsed.sessionId);
-    if (!sessionName) {
-      sessionName = await this.extractLastAgentMessageFromEnd(filePath);
-    }
-
+    // Last-resort title for sessions that have no name at all. A completed
+    // run's closing agent message changes as the run proceeds, so it is only
+    // used to label brand-new/untitled sessions, never to upgrade an existing
+    // automatic title.
+    const lastAgentMessage = await this.extractLastAgentMessageFromEnd(filePath);
     return {
       ...parsed,
-      sessionName: normalizeSessionName(sessionName, 'Untitled Codex Session'),
+      sessionName: normalizeSessionName(lastAgentMessage, 'Untitled Codex Session'),
+      sessionNameSource: lastAgentMessage ? 'provider_title' : undefined,
     };
   }
 
@@ -209,4 +236,15 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
 
     return undefined;
   }
+}
+
+/**
+ * User- and provider-authored renames are authoritative, as are fork and
+ * legacy rows whose provenance is unknown. Codex never records Claude-specific
+ * sources, so the authoritative set is narrower than the Claude synchronizer's.
+ */
+function shouldPreserveExistingCodexName(source: SessionNameSource): boolean {
+  return source === 'manual_rename'
+    || source === 'fork'
+    || source === 'legacy_unknown';
 }

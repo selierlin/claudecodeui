@@ -55,6 +55,7 @@
     "lint:client": "oxlint src/",
     "lint:fix": "oxlint src/ server/ --fix",
     "change-password": "node scripts/change-cloudcli-password.mjs",
+    "backfill:claude-name-sources": "tsx --tsconfig server/tsconfig.json server/scripts/backfill-claude-name-sources.ts",
     "start": "npm run build && npm run server",
     "release": "./release.sh",
     "prepublishOnly": "npm run build",

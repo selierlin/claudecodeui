@@ -64,6 +64,24 @@ const writeCodexTranscript = async (
   return filePath;
 };
 
+/**
+ * Writes a session_index.jsonl entry mapping a Codex thread id to its AI
+ * title (`thread_name`), mirroring what Codex publishes once it names a
+ * thread — usually after the run settles, later than the rollout file.
+ */
+const writeCodexSessionIndex = async (
+  homeDir: string,
+  entries: Array<{ id: string; thread_name: string }>,
+): Promise<void> => {
+  const indexDir = path.join(homeDir, '.codex');
+  await mkdir(indexDir, { recursive: true });
+  await writeFile(
+    path.join(indexDir, 'session_index.jsonl'),
+    `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`,
+    'utf8'
+  );
+};
+
 test('Codex synchronizer preserves the title assigned when CloudCLI creates a session', { concurrency: false }, async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-session-sync-app-'));
   const workspacePath = path.join(tempRoot, 'workspace');
@@ -81,7 +99,65 @@ test('Codex synchronizer preserves the title assigned when CloudCLI creates a se
       const synchronizer = new CodexSessionSynchronizer();
       await synchronizer.synchronize();
 
+      // No AI title (thread_name) exists for this session yet, so the app's
+      // initial-message title survives — and its source is not downgraded.
       assert.equal(sessionsDb.getSessionById('app-1')?.custom_name, 'Fix the login redirect');
+      assert.equal(sessionsDb.getSessionById('app-1')?.name_source, 'initial_message');
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('Codex synchronizer upgrades an app-created title to thread_name when it appears', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-session-sync-upgrade-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    // The rollout exists first (and may have been synced) before Codex writes
+    // the AI title into session_index.jsonl — the laggy case this mirrors.
+    await writeCodexTranscript(tempRoot, 'codex-upgrade-1', workspacePath, 'Fix the login redirect');
+    await writeCodexSessionIndex(tempRoot, [{ id: 'codex-upgrade-1', thread_name: 'Refactor the login flow' }]);
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createAppSession('app-upgrade-1', 'codex', workspacePath, 'Fix the login redirect');
+      sessionsDb.assignProviderSessionId('app-upgrade-1', 'codex-upgrade-1');
+
+      const synchronizer = new CodexSessionSynchronizer();
+      await synchronizer.synchronize();
+
+      const session = sessionsDb.getSessionById('app-upgrade-1');
+      assert.equal(session?.custom_name, 'Refactor the login flow');
+      assert.equal(session?.name_source, 'provider_title');
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('Codex synchronizer keeps a manually renamed session over a later thread_name', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-session-sync-rename-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    await writeCodexTranscript(tempRoot, 'codex-rename-1', workspacePath, 'Fix the login redirect');
+    await writeCodexSessionIndex(tempRoot, [{ id: 'codex-rename-1', thread_name: 'Refactor the login flow' }]);
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createAppSession('app-rename-1', 'codex', workspacePath, 'Fix the login redirect');
+      sessionsDb.updateSessionCustomName('app-rename-1', 'My manual title', 'manual_rename');
+      sessionsDb.assignProviderSessionId('app-rename-1', 'codex-rename-1');
+
+      const synchronizer = new CodexSessionSynchronizer();
+      await synchronizer.synchronize();
+
+      const session = sessionsDb.getSessionById('app-rename-1');
+      assert.equal(session?.custom_name, 'My manual title');
+      assert.equal(session?.name_source, 'manual_rename');
     });
   } finally {
     restoreHomeDir();
