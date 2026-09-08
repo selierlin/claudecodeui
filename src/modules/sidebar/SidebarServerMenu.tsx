@@ -1,5 +1,5 @@
 import { Preferences } from '@capacitor/preferences';
-import { ChevronDown, LogOut, Server, Settings, Trash2 } from 'lucide-react';
+import { Check, ChevronDown, LogOut, Server, Settings, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -8,6 +8,8 @@ import { IS_PLATFORM } from '@/shared/utils';
 import { ActionMenu, Button, Dialog, DialogContent, DialogTitle, type ActionMenuItem } from '@/shared/ui';
 
 const PICKER_URL_KEY = 'cloudcli.pickerUrl';
+const SERVERS_KEY = 'cloudcli.servers';
+const SERVER_NAME_KEY = 'cloudcli.serverName';
 
 type WebCachePlugin = {
   clear: () => Promise<void>;
@@ -15,6 +17,13 @@ type WebCachePlugin = {
 
 type ServerSessionPlugin = {
   showPicker: () => Promise<void>;
+  switchToServer: (options: { url: string }) => Promise<void>;
+};
+
+/** 选择页（mobile/www/picker.js）持久化到原生存储的已保存服务器条目。 */
+type SavedServer = {
+  name?: string;
+  url: string;
 };
 
 type CapacitorWindow = {
@@ -33,6 +42,8 @@ export default function SidebarServerMenu({ serverName, onShowSettings }: Sideba
   const { t } = useTranslation(['sidebar', 'auth']);
   const { user, logout } = useAuth();
   const [pickerUrl, setPickerUrl] = useState<string | null>(null);
+  // 已保存服务器列表，用于在服务器名称菜单里直接切换（而非先回到选择页）。
+  const [servers, setServers] = useState<SavedServer[]>([]);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isLogoutDialogOpen, setIsLogoutDialogOpen] = useState(false);
   const [isClearCacheDialogOpen, setIsClearCacheDialogOpen] = useState(false);
@@ -40,6 +51,8 @@ export default function SidebarServerMenu({ serverName, onShowSettings }: Sideba
   const capacitor = (window as unknown as CapacitorWindow).Capacitor;
   const isNativeShell = Boolean(capacitor?.isNativePlatform?.());
   const menuLabel = serverName ?? t('app.title');
+  // 当前 webview 所在的服务器 origin，用于在快速切换列表中标记当前服务器。
+  const currentServerUrl = typeof window !== 'undefined' ? window.location.origin : '';
 
   useEffect(() => {
     if (!isNativeShell) {
@@ -55,6 +68,29 @@ export default function SidebarServerMenu({ serverName, onShowSettings }: Sideba
       })
       .catch(() => {
         // 无法读取服务器选择页地址时，仅隐藏返回入口。
+      });
+
+    void Preferences.get({ key: SERVERS_KEY })
+      .then((result) => {
+        if (disposed || !result.value) {
+          return;
+        }
+        try {
+          const parsed: unknown = JSON.parse(result.value);
+          if (Array.isArray(parsed)) {
+            setServers(
+              parsed.filter(
+                (item): item is SavedServer =>
+                  typeof item === 'object' && item !== null && typeof item.url === 'string',
+              ),
+            );
+          }
+        } catch {
+          // 服务器列表数据损坏时忽略，仅不展示快速切换。
+        }
+      })
+      .catch(() => {
+        // 无法读取服务器列表时，仅不展示快速切换。
       });
 
     return () => {
@@ -75,6 +111,27 @@ export default function SidebarServerMenu({ serverName, onShowSettings }: Sideba
 
     if (pickerUrl) {
       window.location.href = pickerUrl;
+    }
+  };
+
+  /**
+   * 直接切换到指定服务器：先写入目标服务器名称（splash 与侧栏标题读取自
+   * 原生存储），再调用原生 ServerSession.switchToServer 复用/加载对应 WebView。
+   */
+  const switchServer = async (server: SavedServer) => {
+    const serverSession = capacitor?.registerPlugin?.('ServerSession') as ServerSessionPlugin | undefined;
+    if (!serverSession) {
+      return;
+    }
+    try {
+      await Preferences.set({ key: SERVER_NAME_KEY, value: server.name || server.url });
+    } catch {
+      // 写入名称失败不阻断切换，仅目标页标题可能不准确。
+    }
+    try {
+      await serverSession.switchToServer({ url: server.url });
+    } catch {
+      // 原生切换失败时停留在当前服务器。
     }
   };
 
@@ -106,6 +163,21 @@ export default function SidebarServerMenu({ serverName, onShowSettings }: Sideba
       onSelect: onShowSettings,
     },
   ];
+
+  // 原生壳内直接列出已保存服务器，点击即可切换，无需先回到选择页。
+  if (isNativeShell && pickerUrl && servers.length > 0) {
+    servers.forEach((server, index) => {
+      const isCurrent = server.url === currentServerUrl;
+      menuItems.push({
+        key: `server-${server.url}`,
+        label: server.name || server.url,
+        description: server.url,
+        icon: isCurrent ? Check : Server,
+        onSelect: isCurrent ? () => undefined : () => void switchServer(server),
+        showDividerBefore: index === 0,
+      });
+    });
+  }
 
   if (pickerUrl) {
     menuItems.push({
@@ -204,7 +276,12 @@ export default function SidebarServerMenu({ serverName, onShowSettings }: Sideba
                   onClick={() => runMobileItem(item)}
                 >
                   {Icon && <Icon className="h-5 w-5 flex-shrink-0" />}
-                  <span className="text-sm font-medium">{item.label}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-medium">{item.label}</span>
+                    {item.description && (
+                      <span className="block truncate text-xs text-muted-foreground">{item.description}</span>
+                    )}
+                  </span>
                 </button>
               );
             })}

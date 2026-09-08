@@ -54,6 +54,31 @@ test('notification payload uses the app session id for a provider session id', a
   });
 });
 
+test('notification payload renders a completed run with the Chinese completion message', () => {
+  const payload = buildNotificationPayload({
+    provider: 'claude',
+    sessionId: null,
+    kind: 'stop',
+    code: 'run.stopped',
+    meta: { stopReason: 'completed' },
+  });
+
+  assert.match(payload.body, /^Claude:/);
+  assert.match(payload.body, /回复已完成/);
+});
+
+test('notification payload renders an aborted run with the Chinese interruption message', () => {
+  const payload = buildNotificationPayload({
+    provider: 'claude',
+    sessionId: null,
+    kind: 'stop',
+    code: 'run.stopped',
+    meta: { stopReason: 'aborted' },
+  });
+
+  assert.match(payload.body, /运行已中断/);
+});
+
 test('notification payload names WorkBuddy runs instead of falling back to Assistant', () => {
   const payload = buildNotificationPayload({
     provider: 'workbuddy',

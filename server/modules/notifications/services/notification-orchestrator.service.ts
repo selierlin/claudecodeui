@@ -107,6 +107,17 @@ export function createNotificationEvent({
   };
 }
 
+/** Renders the notification body for a stopped run, distinguishing successful completion from an abort. */
+function buildRunStoppedMessage(stopReason: unknown): string {
+  if (stopReason === 'completed') {
+    return '✅ 回复已完成';
+  }
+  if (stopReason === 'aborted') {
+    return '运行已中断';
+  }
+  return String(stopReason || 'Run Stopped: The run has stopped');
+}
+
 function normalizeErrorMessage(error: unknown): string {
   if (typeof error === 'string') {
     return error;
@@ -194,7 +205,7 @@ export function buildNotificationPayload(event: NotificationEventInput): Notific
     'permission.required': normalizedEvent.meta.toolName
       ? `Action Required: Tool "${normalizedEvent.meta.toolName}" needs approval`
       : 'Action Required: A tool needs your approval',
-    'run.stopped': String(normalizedEvent.meta.stopReason || 'Run Stopped: The run has stopped'),
+    'run.stopped': buildRunStoppedMessage(normalizedEvent.meta.stopReason),
     'run.background_completed': 'Background work finished',
     'run.failed': normalizedEvent.meta.error ? `Run Failed: ${normalizedEvent.meta.error}` : 'Run Failed: The run encountered an error',
     'agent.notification': normalizedEvent.meta.message ? String(normalizedEvent.meta.message) : 'You have a new notification',
