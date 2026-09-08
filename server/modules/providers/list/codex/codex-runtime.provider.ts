@@ -8,25 +8,24 @@
  * ## Usage
  *
  * - codexRuntime.run(command, options, writer, context) - Execute a streamed prompt
- * - abortCodexSession(sessionId) - Cancel an active session
- * - isCodexSessionActive(sessionId) - Check if a session is running
- * - getActiveCodexSessions() - List all active sessions
+ * - codexRuntime.abort(sessionId) - Cancel an active session
  */
 
-import { Codex, type ThreadOptions } from '@openai/codex-sdk';
+import { Codex } from '@openai/codex-sdk';
+import type { ModelReasoningEffort, Thread, ThreadOptions } from '@openai/codex-sdk';
 
-import type { IProviderRuntime } from '@/shared/interfaces.js';
-import type { AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/types.js';
 import {
   appendFilesInputTag,
   buildCodexInputItems,
-  normalizeImageDescriptors
-} from '@/shared/image-attachments.js';
+  normalizeImageDescriptors,
+  createCompleteMessage,
+  createNormalizedMessage,
+} from '@/shared/index.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
-import { createCompleteMessage, createNormalizedMessage } from '@/shared/utils.js';
+import type { AnyRecord, ProviderRuntimeContext, ProviderRuntimeWriter } from '@/shared/index.js';
 
 type ActiveCodexSession = {
-  thread: any;
+  thread: Thread;
   codex: Codex;
   status: 'running' | 'aborted' | 'completed';
   abortController: AbortController;
@@ -41,25 +40,22 @@ const activeCodexSessions = new Map<string, ActiveCodexSession>();
  */
 const PROGRESSIVE_CODEX_ITEM_TYPES = new Set(['command_execution', 'mcp_tool_call', 'todo_list']);
 
-function readUsageNumber(value: unknown): number {
+function readUsageNumber(value: unknown) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-export function extractCodexTokenBudget(event: AnyRecord): AnyRecord | null {
-  const info = (event.info || (event.payload as AnyRecord | undefined)?.info || (event.usage as AnyRecord | undefined)?.info) as AnyRecord | undefined;
-  const usage = info?.total_token_usage || (event.usage as AnyRecord | undefined)?.total_token_usage || event.usage;
+export function extractCodexTokenBudget(event: AnyRecord) {
+  const info = event?.info || event?.payload?.info || event?.usage?.info;
+  const usage = info?.total_token_usage || event?.usage?.total_token_usage || event?.usage;
   if (!usage || typeof usage !== 'object') {
     return null;
   }
 
-  const usageRecord = usage as AnyRecord;
-
-  const inputTokens = readUsageNumber(usageRecord.input_tokens);
-  const outputTokens = readUsageNumber(usageRecord.output_tokens);
-  const reasoningTokens = readUsageNumber(usageRecord.reasoning_output_tokens);
-  const totalTokens = readUsageNumber(usageRecord.total_tokens);
-  const used = totalTokens || inputTokens + outputTokens + reasoningTokens;
+  const inputTokens = readUsageNumber(usage.input_tokens);
+  const outputTokens = readUsageNumber(usage.output_tokens);
+  const reasoningTokens = readUsageNumber(usage.reasoning_output_tokens);
+  const used = readUsageNumber(usage.total_tokens) || inputTokens + outputTokens + reasoningTokens;
 
   return {
     used,
@@ -86,7 +82,7 @@ export function transformCodexEvent(event: AnyRecord): AnyRecord {
     case 'item.started':
     case 'item.updated':
     case 'item.completed':
-      const item = event.item as AnyRecord | undefined;
+      const item = event.item;
       if (!item) {
         return { type: event.type, item: null };
       }
@@ -166,7 +162,7 @@ export function transformCodexEvent(event: AnyRecord): AnyRecord {
             itemType: 'todo_list',
             itemId: item.id,
             items: item.items,
-            eventType: event.type,
+            eventType: event.type
           };
 
         case 'error':
@@ -231,9 +227,7 @@ export function transformCodexEvent(event: AnyRecord): AnyRecord {
  * @param {string} permissionMode - 'default', 'acceptEdits', or 'bypassPermissions'
  * @returns {object} - { sandboxMode, approvalPolicy }
  */
-function mapPermissionModeToCodexOptions(
-  permissionMode: string,
-): Pick<ThreadOptions, 'sandboxMode' | 'approvalPolicy'> {
+function mapPermissionModeToCodexOptions(permissionMode: string): Pick<ThreadOptions, 'sandboxMode' | 'approvalPolicy'> {
   switch (permissionMode) {
     case 'acceptEdits':
       return {
@@ -249,6 +243,8 @@ function mapPermissionModeToCodexOptions(
     default:
       return {
         sandboxMode: 'workspace-write',
+        // Current Codex CLI versions reject the retired `untrusted` policy.
+        // Keep sandboxing enabled; exec cannot grant interactive approval requests.
         approvalPolicy: 'on-request'
       };
   }
@@ -260,12 +256,12 @@ function mapPermissionModeToCodexOptions(
  * @param {object} options - Options including cwd, sessionId, model, permissionMode
  * @param {WebSocket|object} ws - WebSocket connection or response writer
  */
-export async function queryCodex(
+async function queryCodex(
   command: string,
   options: AnyRecord = {},
   ws: ProviderRuntimeWriter,
   context: ProviderRuntimeContext,
-): Promise<void> {
+) {
   const {
     sessionId,
     sessionSummary,
@@ -289,17 +285,17 @@ export async function queryCodex(
   const catalog = await context.getProviderModels();
   const selectedModel = catalog.OPTIONS.find((option) => option.value === resolvedModel) || null;
   const allowedEfforts = selectedModel?.effort?.values?.map((value) => value.value) || [];
-  const resolvedEffort: ThreadOptions['modelReasoningEffort'] = typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
-    ? effort as ThreadOptions['modelReasoningEffort']
+  const resolvedEffort = typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
+    ? effort as ModelReasoningEffort
     : undefined;
 
   let codex: Codex;
-  let thread: any;
+  let thread: Thread;
   // Provider-native thread id (starts as the resume id, or is captured from
   // the stream for brand-new sessions).
   let capturedSessionId = providerSessionId;
   let sessionCreatedSent = false;
-  let terminalFailure = null;
+  let terminalFailure: { message: string } | null = null;
   // Codex surfaces API failures as streamed error items/turn.failed events, and
   // then the SDK also throws "Codex Exec exited with code N: <stderr>" once the
   // process dies. Showing both means the rendered error is followed by a raw
@@ -314,7 +310,7 @@ export async function queryCodex(
   try {
     codex = new Codex();
 
-    const threadOptions = {
+    const threadOptions: ThreadOptions = {
       workingDirectory,
       skipGitRepoCheck: true,
       sandboxMode,
@@ -359,13 +355,13 @@ export async function queryCodex(
     for await (const event of streamedTurn.events) {
       // Capture thread/session id lazily from the stream (Codex emits this asynchronously).
       if (event.type === 'thread.started') {
-        const discoveredSessionId = event.thread_id || event.id || null;
+        const discoveredSessionId = event.thread_id || null;
         if (discoveredSessionId && !capturedSessionId) {
           capturedSessionId = discoveredSessionId;
           registerSession(sessionKey());
 
           if (ws.setSessionId && typeof ws.setSessionId === 'function') {
-            ws.setSessionId(discoveredSessionId);
+            ws.setSessionId(capturedSessionId);
           }
 
           if (!providerSessionId && !sessionCreatedSent) {
@@ -380,7 +376,7 @@ export async function queryCodex(
         break;
       }
       if (sessionKey()) {
-        const session = activeCodexSessions.get(sessionKey());
+        const session = activeCodexSessions.get(sessionKey() || '');
         if (session?.status === 'aborted') {
           break;
         }
@@ -398,6 +394,7 @@ export async function queryCodex(
       ) {
         continue;
       }
+
       const transformed = transformCodexEvent(event);
       if (transformed.type === 'error' || transformed.itemType === 'error') {
         errorSurfaced = true;
@@ -433,7 +430,7 @@ export async function queryCodex(
 
     // Send the terminal completion event — skipped for aborted runs, whose
     // terminal `complete` (aborted: true) was already sent by abort-session.
-    const runSession = sessionKey() ? activeCodexSessions.get(sessionKey()) : null;
+    const runSession = activeCodexSessions.get(sessionKey() || '');
     const runAborted = runSession?.status === 'aborted' || abortController.signal.aborted;
     if (!runAborted) {
       sendMessage(ws, createCompleteMessage({
@@ -453,12 +450,13 @@ export async function queryCodex(
       }
     }
 
-  } catch (error: any) {
-    const session = sessionKey() ? activeCodexSessions.get(sessionKey()) : null;
+  } catch (error) {
+    const session = activeCodexSessions.get(sessionKey() || '');
+    const runError = error instanceof Error ? error : new Error(String(error));
     const wasAborted =
       session?.status === 'aborted' ||
-      error?.name === 'AbortError' ||
-      String(error?.message || '').toLowerCase().includes('aborted');
+      runError.name === 'AbortError' ||
+      runError.message.toLowerCase().includes('aborted');
 
     if (!wasAborted) {
       console.error('[Codex] Error:', error);
@@ -468,7 +466,7 @@ export async function queryCodex(
         const installed = await context.isProviderInstalled();
         const errorContent = !installed
           ? 'Codex CLI is not configured. Please set up authentication first.'
-          : error.message;
+          : runError.message;
 
         sendMessage(ws, createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: capturedSessionId || sessionId || null, provider: 'codex' }));
       }
@@ -491,7 +489,7 @@ export async function queryCodex(
   } finally {
     // Update session status
     if (sessionKey()) {
-      const session = activeCodexSessions.get(sessionKey());
+      const session = activeCodexSessions.get(sessionKey() || '');
       if (session) {
         session.status = session.status === 'aborted' ? 'aborted' : 'completed';
       }
@@ -504,7 +502,7 @@ export async function queryCodex(
  * @param {string} sessionId - Session ID to abort
  * @returns {boolean} - Whether abort was successful
  */
-export function abortCodexSession(sessionId: string): boolean {
+function abortCodexSession(sessionId: string) {
   const session = activeCodexSessions.get(sessionId);
 
   if (!session) {
@@ -521,37 +519,8 @@ export function abortCodexSession(sessionId: string): boolean {
   return true;
 }
 
-/**
- * Check if a session is active
- * @param {string} sessionId - Session ID to check
- * @returns {boolean} - Whether session is active
- */
-export function isCodexSessionActive(sessionId: string): boolean {
-  const session = activeCodexSessions.get(sessionId);
-  return session?.status === 'running';
-}
-
-/**
- * Get all active sessions
- * @returns {Array} - Array of active session info
- */
-export function getActiveCodexSessions(): Array<{ id: string; status: 'running'; startedAt: string }> {
-  const sessions: Array<{ id: string; status: 'running'; startedAt: string }> = [];
-
-  for (const [id, session] of activeCodexSessions.entries()) {
-    if (session.status === 'running') {
-      sessions.push({
-        id,
-        status: session.status,
-        startedAt: session.startedAt
-      });
-    }
-  }
-
-  return sessions;
-}
-
-export const codexRuntime: IProviderRuntime = {
+/** Used by the providers module's CodexProvider to run and abort SDK turns. */
+export const codexRuntime = {
   run: queryCodex,
   abort: abortCodexSession,
 };
@@ -561,7 +530,7 @@ export const codexRuntime: IProviderRuntime = {
  * @param {WebSocket|object} ws - WebSocket or response writer
  * @param {object} data - Data to send
  */
-function sendMessage(ws: ProviderRuntimeWriter, data: unknown): void {
+function sendMessage(ws: ProviderRuntimeWriter, data: unknown) {
   try {
     if (ws.isSSEStreamWriter || ws.isWebSocketWriter) {
       // Writer handles stringification (SSEStreamWriter or WebSocketWriter)
