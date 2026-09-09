@@ -65,11 +65,11 @@ const KNOWN_NOT_READ_TYPES = new Map([
 
 /**
  * message.content 数组元素类型（readTranscript 认知）。
- * user: input_text（extractUserPrompt 提取 <user_query>）+ tool_result；
+ * user: input_text（extractUserPrompt 提取 <user_query>）+ image_blob_ref（还原图片附件）+ tool_result；
  * assistant: output_text（text）+ reasoning_text（thinking）+ tool_use。
  */
 const KNOWN_BLOCK_TYPES = new Set([
-  'input_text', 'output_text', 'reasoning_text', 'tool_use', 'tool_result',
+  'input_text', 'image_blob_ref', 'output_text', 'reasoning_text', 'tool_use', 'tool_result',
 ]);
 
 /**

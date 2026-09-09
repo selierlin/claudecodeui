@@ -56,7 +56,8 @@ transcript 结构 —— 项目解析器不认识新结构时，消息会**渲�
 | `system` | `subtype` 以 `task_` 开头 → task_notification（`normalizeTaskEvent`）；`subtype=init` 是实时初始化；其他 subtype normalize 返回 [] |
 
 **content block 类型**（`message.content` 数组元素）：
-`input_text`（user 真实输入，text 含注入 + `<user_query>`）/ `output_text`（assistant 正文）/
+`input_text`（user 真实输入，text 含注入 + `<user_query>`）/ `image_blob_ref`（user 图片附件，按
+`blob_path`/`mime`/`original_filename` 还原为 data URL 图片）/ `output_text`（assistant 正文）/
 `reasoning_text`（assistant 思考 → thinking）/ `tool_use`（assistant 工具调用）/ `tool_result`（user 工具结果）。
 
 **用户输入提取**（`extractUserPrompt`）：`input_text.text` 里 `<user_query>…</user_query>` 之间的内容才是
@@ -79,7 +80,8 @@ transcript 结构 —— 项目解析器不认识新结构时，消息会**渲�
   5. 其他 → `[]`
 - `workbuddy-sessions.provider.ts` → `readTranscript()`（历史主链路）：
   - `type!=='message'` → 交给 normalizeMessage（function_call 等）
-  - `type==='message'`：`role==='user'` 取 `input_text`（`extractUserPrompt` 提取 `<user_query>`）+ `tool_result`；
+  - `type==='message'`：`role==='user'` 取 `input_text`（`extractUserPrompt` 提取 `<user_query>`）+
+    `image_blob_ref`（读取 blob 文件还原图片）+ `tool_result`；
     `role==='assistant'` 取 `reasoning_text`（thinking）/`output_text`（text）/`tool_use`
   - 坏行 `JSON.parse` 失败跳过；`ai-title`/`file-history-snapshot`/`reasoning` 被跳过
 - `workbuddy-session-synchronizer.provider.ts`：sessionId 取文件名；cwd 从 message 事件顶层取；
