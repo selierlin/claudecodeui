@@ -31,9 +31,12 @@ export default function AgentSelectorSection({
       <PillBar className="w-full flex-wrap">
         {agents.map((agent) => {
           const dotColor =
-            agent === 'claude' ? 'bg-blue-500' :
-            agent === 'cursor' ? 'bg-purple-500' :
-            agent === 'opencode' ? 'bg-zinc-500' : 'bg-foreground/60';
+            agent === 'claude' ? 'bg-[#D77655]' :
+            agent === 'cursor' ? 'bg-foreground' :
+            agent === 'codex' ? 'bg-[#10a37f]' :
+            agent === 'opencode' ? 'bg-zinc-500' :
+            agent === 'dsh' ? 'bg-[#4D6BFE]' :
+            agent === 'workbuddy' ? 'bg-[#01C886]' : 'bg-foreground';
 
           return (
             <Pill
