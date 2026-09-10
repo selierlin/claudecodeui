@@ -6,6 +6,7 @@ import chokidar, { type FSWatcher } from 'chokidar';
 
 import { sessionSynchronizerService } from '@/modules/providers/services/session-synchronizer.service.js';
 import { getDshSessionsRoot } from '@/modules/providers/list/dsh/dsh-models.provider.js';
+import { getPiSessionsRoot } from '@/modules/providers/list/pi/pi-models.provider.js';
 import { getWorkbuddySessionRoots } from '@/modules/providers/list/workbuddy/workbuddy-storage.provider.js';
 import { broadcastSessionUpsertedBatch } from '@/modules/websocket/index.js';
 import type { LLMProvider } from '@/shared/types.js';
@@ -41,6 +42,10 @@ function getProviderWatchPaths(): Array<{ provider: LLMProvider; rootPath: strin
       rootPath: getDshSessionsRoot(),
     },
     ...getWorkbuddySessionRoots().map((rootPath) => ({ provider: 'workbuddy' as const, rootPath })),
+    {
+      provider: 'pi',
+      rootPath: getPiSessionsRoot(),
+    },
   ];
 }
 
@@ -50,7 +55,9 @@ function getProviderWatchPaths(): Array<{ provider: LLMProvider; rootPath: strin
  * phantom directory tree created under the user's home.
  */
 function isProviderEnginePresent(provider: LLMProvider, rootPath: string): boolean {
-  if (provider === 'dsh') {
+  if (provider === 'dsh' || provider === 'pi') {
+    // Guard the watcher's mkdir: a missing engine (no dsh-desktop, no pi CLI)
+    // must not get a phantom directory tree created under the user's home.
     return existsSync(path.dirname(rootPath));
   }
   // The remaining providers store transcripts under home-dir config folders

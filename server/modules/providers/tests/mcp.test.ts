@@ -381,14 +381,17 @@ test('providerMcpService global adder writes to all providers and rejects unsupp
       workspacePath,
     });
 
-    assert.equal(globalResult.length, 6);
-    // DSH remains externally managed; WorkBuddy persists its native MCP config
-    // and therefore participates in the global add operation.
+    assert.equal(globalResult.length, 7);
+    // DSH remains externally managed and Pi has no native MCP support;
+    // WorkBuddy persists its native MCP config and therefore participates in
+    // the global add operation.
     const dshEntry = globalResult.find((entry) => entry.provider === 'dsh');
     assert.equal(dshEntry?.created, false);
+    const piEntry = globalResult.find((entry) => entry.provider === 'pi');
+    assert.equal(piEntry?.created, false);
     assert.ok(
       globalResult
-        .filter((entry) => entry.provider !== 'dsh')
+        .filter((entry) => entry.provider !== 'dsh' && entry.provider !== 'pi')
         .every((entry) => entry.created === true),
     );
 

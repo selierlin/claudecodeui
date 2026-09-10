@@ -36,6 +36,7 @@ function createDependencies(
     queryOpenCode: unexpectedProviderCall as AgentDependencies['queryOpenCode'],
     queryDsh: unexpectedProviderCall as AgentDependencies['queryDsh'],
     queryWorkbuddy: unexpectedProviderCall as AgentDependencies['queryWorkbuddy'],
+    queryPi: unexpectedProviderCall as AgentDependencies['queryPi'],
     GithubClient: class {} as unknown as AgentDependencies['GithubClient'],
     ...overrides,
   };

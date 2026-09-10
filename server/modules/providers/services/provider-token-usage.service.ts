@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 import { sessionsDb } from '@/modules/database/index.js';
 import type { AnyRecord } from '@/shared/types.js';
 import { AppError, getOpenCodeDatabasePath } from '@/shared/utils.js';
+import { resolvePiTranscriptPath } from '@/modules/providers/list/pi/pi-sessions.provider.js';
 
 type SessionRow = NonNullable<ReturnType<typeof sessionsDb.getSessionById>>;
 
@@ -276,6 +277,61 @@ function claudeEntriesHaveUsage(entries: AnyRecord[]): boolean {
   return entries.some((entry) => entry?.type === 'assistant' && entry.message?.usage);
 }
 
+/**
+ * Summarizes the newest assistant usage from a Pi transcript. Pi reports usage
+ * as `{ input, output, cacheRead, cacheWrite, totalTokens, cost }` on assistant
+ * messages; the newest turn is the current context occupation, matching the
+ * Claude summarizer's semantics.
+ */
+function readPiTokenUsage(entries: AnyRecord[]): TokenUsageResult | undefined {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry?.type !== 'message' || entry.message?.role !== 'assistant') {
+      continue;
+    }
+    const usage = entry.message.usage as AnyRecord | null | undefined;
+    if (!usage || typeof usage !== 'object') {
+      continue;
+    }
+    const readNumber = (value: unknown): number => (
+      typeof value === 'number' && Number.isFinite(value) ? value : 0
+    );
+    const input = readNumber(usage.input);
+    const output = readNumber(usage.output);
+    const cacheRead = readNumber(usage.cacheRead);
+    const cacheWrite = readNumber(usage.cacheWrite);
+    const totalTokens = readNumber(usage.totalTokens);
+    if (input === 0 && output === 0) {
+      continue;
+    }
+    const cacheTokens = cacheRead + cacheWrite;
+    return {
+      used: input + output,
+      total: totalTokens > 0 ? totalTokens : 160_000,
+      inputTokens: input,
+      outputTokens: output,
+      cacheReadTokens: cacheRead,
+      cacheCreationTokens: cacheWrite,
+      cacheTokens,
+      breakdown: { input: input + cacheTokens, output },
+    };
+  }
+  return undefined;
+}
+
+function emptyPiTokenUsage(): TokenUsageResult {
+  return {
+    used: 0,
+    total: 160_000,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    cacheTokens: 0,
+    breakdown: { input: 0, output: 0 },
+  };
+}
+
 function readOpenCodeTokenUsage(databasePath: string, providerSessionId: string): TokenUsageResult {
   const database = new Database(databasePath, { readonly: true, fileMustExist: true });
   try {
@@ -403,6 +459,26 @@ export function createProviderTokenUsageService(
           unsupported: true,
           message: 'Token usage tracking not available for WorkBuddy sessions',
         };
+      }
+
+      if (session.provider === 'pi') {
+        const indexedFilePath = session.jsonl_path && dependencies.fileExists(session.jsonl_path)
+          ? session.jsonl_path
+          : null;
+        const sessionFilePath = indexedFilePath
+          ?? (session.project_path
+            ? await resolvePiTranscriptPath(providerSessionId, session.project_path)
+            : null);
+        if (!sessionFilePath || !dependencies.fileExists(sessionFilePath)) {
+          return emptyPiTokenUsage();
+        }
+
+        const tail = await dependencies.readTextFileTail(sessionFilePath, TOKEN_USAGE_TAIL_BYTES);
+        let entries = parseClaudeUsageEntries(tail.content);
+        if (!readPiTokenUsage(entries) && !tail.isComplete) {
+          entries = parseClaudeUsageEntries(await dependencies.readTextFile(sessionFilePath));
+        }
+        return readPiTokenUsage(entries) ?? emptyPiTokenUsage();
       }
 
       if (session.provider === 'opencode') {

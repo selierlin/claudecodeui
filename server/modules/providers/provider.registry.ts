@@ -3,6 +3,7 @@ import { CodexProvider } from '@/modules/providers/list/codex/codex.provider.js'
 import { CursorProvider } from '@/modules/providers/list/cursor/cursor.provider.js';
 import { DshProvider } from '@/modules/providers/list/dsh/dsh.provider.js';
 import { OpenCodeProvider } from '@/modules/providers/list/opencode/opencode.provider.js';
+import { PiProvider } from '@/modules/providers/list/pi/pi.provider.js';
 import { WorkbuddyProvider } from '@/modules/providers/list/workbuddy/workbuddy.provider.js';
 import type { IProvider } from '@/shared/interfaces.js';
 import type { LLMProvider } from '@/shared/types.js';
@@ -15,6 +16,7 @@ const providers: Record<LLMProvider, IProvider> = {
   opencode: new OpenCodeProvider(),
   dsh: new DshProvider(),
   workbuddy: new WorkbuddyProvider(),
+  pi: new PiProvider(),
 };
 
 /**

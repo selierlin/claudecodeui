@@ -139,6 +139,25 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     supportsMessageEditing: false,
     supportsSessionForking: false,
   },
+  pi: {
+    provider: 'pi',
+    // Pi runs tools autonomously with no approval gate. Its only real safety
+    // lever is the built-in tool allowlist, so the picker offers the honest
+    // pair: default (autonomous) and read-only (`--tools read,grep,find,ls`).
+    permissionModes: ['default', 'readonly'],
+    defaultPermissionMode: 'default',
+    // Attachments ride Pi's native `@file` positional arguments (real file
+    // input, not path references), and usage is summarized from transcripts.
+    supportsImages: true,
+    supportsFiles: true,
+    supportsAbort: true,
+    supportsPermissionRequests: false,
+    supportsTokenUsage: true,
+    // Effort maps onto Pi's `--thinking` levels for reasoning-capable models.
+    supportsEffort: true,
+    supportsMessageEditing: false,
+    supportsSessionForking: false,
+  },
 };
 
 /**

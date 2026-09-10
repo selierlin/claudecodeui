@@ -24,6 +24,7 @@ type AgentRouterDependencies = {
   queryOpenCode: ProviderRunFunction;
   queryDsh: ProviderRunFunction;
   queryWorkbuddy: ProviderRunFunction;
+  queryPi: ProviderRunFunction;
   GithubClient: typeof import('@octokit/rest').Octokit;
 };
 
@@ -48,6 +49,7 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
   const spawnOpenCode = dependencies.queryOpenCode;
   const queryDsh = dependencies.queryDsh;
   const queryWorkbuddy = dependencies.queryWorkbuddy;
+  const queryPi = dependencies.queryPi;
   const Octokit = dependencies.GithubClient;
   const router = express.Router();
 
@@ -900,8 +902,8 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
       return res.status(400).json({ error: 'message is required' });
     }
 
-    if (!['claude', 'cursor', 'codex', 'opencode', 'dsh', 'workbuddy'].includes(provider)) {
-      return res.status(400).json({ error: 'provider must be "claude", "cursor", "codex", "opencode", "dsh", or "workbuddy"' });
+    if (!['claude', 'cursor', 'codex', 'opencode', 'dsh', 'workbuddy', 'pi'].includes(provider)) {
+      return res.status(400).json({ error: 'provider must be "claude", "cursor", "codex", "opencode", "dsh", "workbuddy", or "pi"' });
     }
 
     // Validate GitHub branch/PR creation requirements
@@ -1045,6 +1047,17 @@ export function createAgentRouter(dependencies: AgentRouterDependencies): expres
         console.log('🤖 Starting WorkBuddy CLI session');
 
         await queryWorkbuddy(message.trim(), {
+          projectPath: finalProjectPath,
+          cwd: finalProjectPath,
+          sessionId: sessionId || `api-${crypto.randomUUID()}`,
+          model: model || undefined,
+          effort,
+          permissionMode: 'bypassPermissions'
+        }, writer);
+      } else if (provider === 'pi') {
+        console.log('🤖 Starting Pi CLI session');
+
+        await queryPi(message.trim(), {
           projectPath: finalProjectPath,
           cwd: finalProjectPath,
           sessionId: sessionId || `api-${crypto.randomUUID()}`,

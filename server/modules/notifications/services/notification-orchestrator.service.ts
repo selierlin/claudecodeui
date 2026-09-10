@@ -51,6 +51,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   dsh: 'DeepSeek Harness',
   system: 'System',
   workbuddy: 'WorkBuddy',
+  pi: 'Pi',
 };
 
 const recentEventKeys = new Map<string, number>();

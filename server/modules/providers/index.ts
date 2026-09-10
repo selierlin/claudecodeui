@@ -16,3 +16,7 @@ export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
 // getWorkbuddyCommand: used by the websocket shell service to spawn the
 // WorkBuddy CLI at its resolved absolute path (not reliant on the PTY's PATH).
 export { getWorkbuddyCommand } from './list/workbuddy/workbuddy-auth.provider.js';
+
+// getPiCommand: used by the websocket shell service to spawn the Pi CLI at its
+// resolved absolute path (not reliant on the PTY's PATH).
+export { getPiCommand } from './list/pi/pi-auth.provider.js';

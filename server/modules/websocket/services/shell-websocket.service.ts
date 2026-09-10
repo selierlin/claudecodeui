@@ -6,7 +6,7 @@ import pty, { type IPty } from 'node-pty';
 import { WebSocket, type RawData } from 'ws';
 
 import { parseIncomingJsonObject } from '@/shared/utils.js';
-import { getWorkbuddyCommand } from '@/modules/providers/index.js';
+import { getPiCommand, getWorkbuddyCommand } from '@/modules/providers/index.js';
 
 type ShellIncomingMessage = {
   type?: string;
@@ -230,6 +230,17 @@ function buildShellCommand(
       return `${codebuddyBin} --resume "${resumeSessionId}" || ${codebuddyBin}`;
     }
     return initialCommand || codebuddyBin;
+  }
+
+  if (provider === 'pi') {
+    const piBin = getPiCommand();
+    if (resumeSessionId) {
+      if (os.platform() === 'win32') {
+        return `${piBin} --session "${resumeSessionId}"; if ($LASTEXITCODE -ne 0) { ${piBin} }`;
+      }
+      return `${piBin} --session "${resumeSessionId}" || ${piBin}`;
+    }
+    return initialCommand || piBin;
   }
 
   // Launching with the flag is what unlocks "bypass permissions" in the CLI's
@@ -560,6 +571,8 @@ export function handleShellConnection(
                     ? 'OpenCode'
                   : provider === 'workbuddy'
                       ? 'WorkBuddy'
+                    : provider === 'pi'
+                        ? 'Pi'
                     : 'Claude';
           welcomeMsg = hasSession && resumeSessionId
             ? `\x1b[36mResuming ${providerName} session ${resumeSessionId} in: ${projectPath}\x1b[0m\r\n`

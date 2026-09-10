@@ -47,6 +47,7 @@ Current provider ids in this repo are:
 - `opencode`
 - `dsh`
 - `workbuddy`
+- `pi`
 
 Those ids are mirrored in backend unions and frontend provider constants. If
 adding a new provider, update every place that hardcodes this list.
@@ -67,7 +68,7 @@ server/modules/providers/list/<provider>/
   <provider>-session-synchronizer.provider.ts
 ```
 
-The existing provider folders are `claude`, `codex`, `cursor`, `opencode`, `dsh`, and `workbuddy`.
+The existing provider folders are `claude`, `codex`, `cursor`, `opencode`, `dsh`, `workbuddy`, and `pi`.
 
 Each provider wrapper owns its SDK/CLI runtime alongside its auth, model, and
 session facets. Runtime adapters receive registry-backed model and session
@@ -147,6 +148,7 @@ Current MCP formats in this repo are:
 | OpenCode | `~/.config/opencode/opencode.json` or `<workspace>/opencode.json` (`.jsonc` is read when present) | `user`, `project` | `stdio`, `http` |
 | DSH | Harness-managed MCP configuration | `user`, `project` | `stdio`, `http`, `sse` |
 | WorkBuddy | `~/.codebuddy.json` / `~/.workbuddy/.mcp.json` and `<workspace>/.mcp.json` | `user`, `local`, `project` | `stdio`, `http`, `sse` |
+| Pi | n/a (Pi has no native MCP server support) | — | — |
 
 WorkBuddy authentication is owned by the WorkBuddy desktop app. CloudCLI only
 checks that the configured `codebuddy` executable (PATH, `CODEBUDDY_COMMAND`,
@@ -176,6 +178,7 @@ Current skill discovery roots are:
 | OpenCode | `~/.config/opencode/skills`, `~/.claude/skills`, `~/.agents/skills` | Cwd-to-topmost-git-root `.opencode/skills`, `.claude/skills`, and `.agents/skills` | `/` | Reuses OpenCode, Claude, and Agents skill locations. Overlapping roots are deduplicated before scanning. |
 | DSH | Harness-managed skills | Harness-managed project roots | `/` | The adapter exposes only roots supported by the DSH bridge. |
 | WorkBuddy | `~/.workbuddy/skills` (or the configured WorkBuddy state directory) | None | `/` | WorkBuddy currently loads user skills only; the adapter does not invent project-level discovery. |
+| Pi | `~/.pi/agent/skills`, `~/.agents/skills` | `<workspace>/.pi/skills`, `<workspace>/.agents/skills` + cwd-to-git-root `.agents/skills` | `/skill:` | Pi loads all four roots (user roots always; project roots only after Pi trusts the project). Direct root-level `.md` files count as skills only in Pi's own roots (`~/.pi/agent/skills`, `.pi/skills`). |
 
 Command forms currently used by the providers are:
 
@@ -223,6 +226,7 @@ Current session sync roots are:
 | OpenCode | `~/.local/share/opencode/opencode.db` | Reads active sessions/messages/parts from OpenCode's shared SQLite database and stores `jsonl_path` as `null` so deleting one app session cannot remove the shared DB. |
 | DSH | Provider-owned session storage | The adapter is only required to implement synchronization when the bridge exposes durable session artifacts. |
 | WorkBuddy | `~/.codebuddy/projects/**/*.jsonl` and `~/.workbuddy/projects/**/*.jsonl` | The first process scan backfills both roots; later scans honor the orchestration cursor. `ai-title`, user prompts, Task events, and `rawResponse.todos` are normalized without indexing `subagents` or transient desktop workspaces. |
+| Pi | `~/.pi/agent/sessions/**/*.jsonl` (`PI_CODING_AGENT_SESSION_DIR` overrides) | Header `session` entry carries the UUID + cwd; `session_info` entries give explicit names; the first user prompt is the fallback title. Files are matched by `_<UUID>.jsonl` suffix. |
 
 8. Register the provider.
 
