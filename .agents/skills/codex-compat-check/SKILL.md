@@ -49,7 +49,7 @@ payload 含 `session_id`/`id`/`source`/`thread_source`。`thread_source==='user'
 - 待办列表：项目读 `response_item:todo_list`（`codex-sessions.provider.ts:423`），但全部会话（新旧）都未产生该事件，
   当前无数据来源 —— 非迁移非回归。**若未来出现 `item_completed:TodoList`，需按 UserMessage 模式适配**
   （TodoList item 的 `items` 结构与旧 `response_item` 的 `items` 是否一致要实测确认）。
-- reasoning 的 `summary` 新旧都是空数组，内容在 `encrypted_content`（加密），thinking 一直不展示。
+- reasoning 的 `summary` 可能是非空 `summary_text` 数组；项目读取 `summary[].text` 并归一化为 thinking。旧会话 summary 为空、内容在 `encrypted_content` 时 thinking 不展示。
 - exec 命令参数键新旧都是 `cmd`（项目按 `command` 提取，提取率新旧都低，见 `translateCodexExecInput`）。
 - 文件编辑新旧都不展示（旧 `patch_apply_end`、新 `FileChange` item 项目都不读）。
 - `item_completed:Reasoning`/`CommandExecution`/`AgentMessage` 与对应 `response_item` 冗余，项目已读后者。
