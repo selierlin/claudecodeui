@@ -98,6 +98,12 @@ export const WORKBUDDY_PREDEFINED_MODELS: ProviderModelsDefinition = {
       description: '多模态模型，适合日常任务。',
     },
     {
+      value: 'deepseek-v4.1-flash',
+      label: 'Deepseek-V4.1-Flash',
+      description: 'DeepSeek 旗舰模型，支持 1M 上下文窗口。',
+      effort: { values: [{ value: 'high' }, { value: 'xhigh' }], default: 'high' },
+    },
+    {
       value: 'deepseek-v4-flash',
       label: 'Deepseek-V4-Flash',
       description: 'DeepSeek 旗舰模型，支持 1M 上下文窗口。',

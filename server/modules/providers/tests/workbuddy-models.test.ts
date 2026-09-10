@@ -22,8 +22,8 @@ test('WorkBuddy returns the curated model list, independent of any engine cache'
   const models = await adapter.getSupportedModels();
 
   assert.deepEqual(models, WORKBUDDY_PREDEFINED_MODELS);
-  // Exactly the fourteen surfaced models, no full routing catalog leakage.
-  assert.equal(models.OPTIONS.length, 14);
+  // Exactly the fifteen surfaced models, no full routing catalog leakage.
+  assert.equal(models.OPTIONS.length, 15);
   assert.equal(models.DEFAULT, 'auto');
 });
 
