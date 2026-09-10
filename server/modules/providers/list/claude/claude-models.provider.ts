@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises';
 
 import { sessionsDb } from '@/modules/database/index.js';
+import { providerSettingsSourceService } from '@/modules/providers/services/provider-settings-source.service.js';
+import { readClaudeSettingsEnv } from '@/shared/claude-settings.js';
 import type { IProviderModels } from '@/shared/interfaces.js';
 import type {
   ProviderCurrentActiveModel,
@@ -167,6 +169,156 @@ export const findClaudeModelOption = (model: string | undefined | null): Provide
 
   return CLAUDE_PREDEFINED_MODELS.OPTIONS.find((option) => option.value === normalizedModel) ?? null;
 };
+
+/**
+ * Claude alias a model-mapping environment variable overrides, keyed the way
+ * the predefined catalog names it. `default` follows `ANTHROPIC_MODEL`, the
+ * others follow the `ANTHROPIC_DEFAULT_*_MODEL` variables Claude Code itself
+ * consumes to translate aliases at run time.
+ */
+export type ClaudeModelAlias = 'default' | 'opus' | 'sonnet' | 'haiku';
+
+/** Effective alias → concrete model id mapping read from configuration. */
+export type ClaudeModelMappings = Partial<Record<ClaudeModelAlias, string>>;
+
+const CLAUDE_MODEL_ENV_KEYS: Record<ClaudeModelAlias, string> = {
+  default: 'ANTHROPIC_MODEL',
+  opus: 'ANTHROPIC_DEFAULT_OPUS_MODEL',
+  sonnet: 'ANTHROPIC_DEFAULT_SONNET_MODEL',
+  haiku: 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+};
+
+/** Catalog options sharing an alias: the `[1m]` variants map to the same model. */
+const CLAUDE_MAPPED_OPTION_ALIASES: Record<string, ClaudeModelAlias> = {
+  default: 'default',
+  opus: 'opus',
+  'opus[1m]': 'opus',
+  sonnet: 'sonnet',
+  'sonnet[1m]': 'sonnet',
+  haiku: 'haiku',
+};
+
+/** Short display names used when a mapped option's label is rewritten. */
+const CLAUDE_MAPPED_OPTION_LABELS: Record<string, string> = {
+  default: 'Default',
+  opus: 'Opus',
+  'opus[1m]': 'Opus (1M context)',
+  sonnet: 'Sonnet',
+  'sonnet[1m]': 'Sonnet (1M context)',
+  haiku: 'Haiku',
+  opusplan: 'Opus Plan',
+};
+
+/**
+ * Picks the effective alias → model mapping from settings `env` sources given
+ * in priority order: the first source that defines an alias's environment
+ * variable wins. Pure and exported for tests.
+ */
+export const pickClaudeModelMappings = (
+  ...sources: Record<string, unknown>[]
+): ClaudeModelMappings => {
+  const mappings: ClaudeModelMappings = {};
+
+  for (const [alias, envKey] of Object.entries(CLAUDE_MODEL_ENV_KEYS) as [ClaudeModelAlias, string][]) {
+    for (const source of sources) {
+      const value = source[envKey];
+      const normalized = typeof value === 'string' ? value.trim() : '';
+      if (normalized) {
+        mappings[alias] = normalized;
+        break;
+      }
+    }
+  }
+
+  return mappings;
+};
+
+/**
+ * Resolves the effective alias → model mapping from host configuration.
+ *
+ * Sources in priority order, matching how the claude runtime feeds Claude Code:
+ *   1. real environment variables of the server process;
+ *   2. the per-provider custom settings file configured in CloudCLI settings
+ *      (forwarded to every run as `--settings`);
+ *   3. the host user settings (`~/.claude/settings.json`), which Claude Code
+ *      always loads.
+ * Unset aliases are omitted so the predefined catalog copy stays
+ * authoritative for them.
+ */
+const resolveClaudeModelMappings = async (): Promise<ClaudeModelMappings> => {
+  const activeSettingsFile = providerSettingsSourceService.resolveActiveSettingsFile('claude');
+  const [activeFileEnv, userSettingsEnv] = await Promise.all([
+    activeSettingsFile ? readClaudeSettingsEnv(activeSettingsFile) : Promise.resolve({}),
+    readClaudeSettingsEnv(),
+  ]);
+
+  return pickClaudeModelMappings(process.env, activeFileEnv, userSettingsEnv);
+};
+
+/**
+ * Rewrites the predefined catalog's display strings for aliases that the host
+ * configuration maps to a concrete model, e.g. `Sonnet → doubao-seed-2.1-turbo`.
+ *
+ * Only `label` and `description` change. `value` keeps the alias because the
+ * Claude runtime resolves aliases through the same environment variables, and
+ * downstream lookups (session restore, custom-model uniqueness, effort
+ * options) are all built on the alias set. Effort levels are kept as-is.
+ *
+ * Exported for tests.
+ */
+export const applyClaudeModelMappings = (
+  definition: ProviderModelsDefinition,
+  mappings: ClaudeModelMappings,
+): ProviderModelsDefinition => {
+  const annotate = (
+    option: ProviderModelOption,
+    label: string,
+    mappedModels: string[],
+    envKeys: string[],
+  ): ProviderModelOption => ({
+    ...option,
+    label: `${label} → ${mappedModels.join(' / ')}`,
+    description: option.description
+      ? `${option.description} Mapped via ${envKeys.join(' + ')}.`
+      : `Mapped via ${envKeys.join(' + ')}.`,
+  });
+
+  return {
+    OPTIONS: definition.OPTIONS.map((option) => {
+      // `opusplan` plans with Opus and executes with Sonnet, so it shows every
+      // one of the two aliases that has a configured mapping.
+      if (option.value === 'opusplan') {
+        const mappedModels = [mappings.opus, mappings.sonnet].filter(
+          (model): model is string => Boolean(model),
+        );
+        const envKeys = [
+          mappings.opus ? CLAUDE_MODEL_ENV_KEYS.opus : null,
+          mappings.sonnet ? CLAUDE_MODEL_ENV_KEYS.sonnet : null,
+        ].filter((key): key is string => Boolean(key));
+
+        if (mappedModels.length > 0) {
+          return annotate(option, CLAUDE_MAPPED_OPTION_LABELS.opusplan, mappedModels, envKeys);
+        }
+
+        return option;
+      }
+
+      const alias = CLAUDE_MAPPED_OPTION_ALIASES[option.value];
+      const mappedModel = alias ? mappings[alias] : undefined;
+      if (!alias || !mappedModel) {
+        return option;
+      }
+
+      return annotate(
+        option,
+        CLAUDE_MAPPED_OPTION_LABELS[option.value] ?? option.label,
+        [mappedModel],
+        [CLAUDE_MODEL_ENV_KEYS[alias]],
+      );
+    }),
+    DEFAULT: definition.DEFAULT,
+  };
+};
 type ClaudeInitEvent = {
   sessionId?: string;
   session_id?: string;
@@ -290,18 +442,12 @@ const readClaudeSessionModelFromJsonl = async (
 
 export class ClaudeProviderModels implements IProviderModels {
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
-    // claude creates a new jsonl file as a separate session for this request.
-    // As a result, it lists the workspace where this is invoked when it shouldn't.
-    //
-    // Disabled for now:
-    // const queryInstance = query({
-    //   prompt: 'Get supported models',
-    //   options: buildClaudeQueryOptions(),
-    // });
-    // const supportedModels = await queryInstance.supportedModels();
-    // queryInstance.close();
-    // return buildClaudeModelsDefinition(supportedModels);
-    return CLAUDE_PREDEFINED_MODELS;
+    // The catalog starts from the predefined aliases and is annotated with the
+    // alias → model mappings configured on the host (ANTHROPIC_MODEL and
+    // ANTHROPIC_DEFAULT_*_MODEL). Querying the SDK instead would start a real
+    // Claude Code session and leave a stray jsonl session file behind, so the
+    // predefined set is never replaced, only relabelled.
+    return applyClaudeModelMappings(CLAUDE_PREDEFINED_MODELS, await resolveClaudeModelMappings());
   }
 
   async getCurrentActiveModel(sessionId?: string): Promise<ProviderCurrentActiveModel> {

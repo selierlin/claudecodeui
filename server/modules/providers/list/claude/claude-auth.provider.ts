@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import spawn from 'cross-spawn';
 
+import { readClaudeSettingsEnv } from '@/shared/claude-settings.js';
 import { resolveClaudeCodeExecutablePath } from '@/shared/claude-cli-path.js';
 import type { IProviderAuth } from '@/shared/interfaces.js';
 import type { ProviderAuthStatus } from '@/shared/types.js';
@@ -66,20 +67,6 @@ export class ClaudeProviderAuth implements IProviderAuth {
   }
 
   /**
-   * Reads Claude settings env values that the CLI can use even when the server process env is empty.
-   */
-  private async loadSettingsEnv(): Promise<Record<string, unknown>> {
-    try {
-      const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
-      const content = await readFile(settingsPath, 'utf8');
-      const settings = readObjectRecord(JSON.parse(content));
-      return readObjectRecord(settings?.env) ?? {};
-    } catch {
-      return {};
-    }
-  }
-
-  /**
    * Checks Claude credentials in the same priority order used by Claude Code.
    */
   private async checkCredentials(): Promise<ClaudeCredentialsStatus> {
@@ -93,7 +80,7 @@ export class ClaudeProviderAuth implements IProviderAuth {
       return { authenticated: true, email: 'API Key Auth', method: 'api_key' };
     }
 
-    const settingsEnv = await this.loadSettingsEnv();
+    const settingsEnv = await readClaudeSettingsEnv();
     if (readOptionalString(settingsEnv.ANTHROPIC_API_KEY)) {
       return { authenticated: true, email: 'API Key Auth', method: 'api_key' };
     }
