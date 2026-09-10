@@ -4,7 +4,7 @@ type WorkbuddyLogoProps = {
 
 const WorkbuddyLogo = ({ className = 'w-5 h-5' }: WorkbuddyLogoProps) => (
   <img
-    src="/workbuddy.png"
+    src="/workbuddy.svg"
     alt="WorkBuddy"
     className={`${className} object-contain`}
   />
