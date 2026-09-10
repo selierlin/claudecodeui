@@ -214,6 +214,22 @@ export const CODE_EDITOR_DEFAULTS = {
 
 // ---------------------------
 
+//----------------- PROVIDER MODEL CATALOG ------------
+
+/**
+ * Window event announcing that a provider's model catalog may have changed on the
+ * server and cached copies should be re-fetched.
+ *
+ * Dispatched by the settings module after a provider settings source is saved
+ * (the active settings file can carry ANTHROPIC_MODEL / ANTHROPIC_DEFAULT_*_MODEL
+ * mappings that the backend folds into the catalog), and observed by the chat
+ * module's `useChatProviderState`, whose catalog is otherwise fetched once per
+ * app mount and would keep showing stale model labels.
+ */
+export const PROVIDER_MODELS_CHANGED_EVENT = 'provider-models:changed';
+
+// ---------------------------
+
 //----------------- PROVIDER TOOL SETTINGS STORAGE ------------
 
 /**

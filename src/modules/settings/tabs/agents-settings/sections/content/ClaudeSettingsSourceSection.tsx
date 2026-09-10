@@ -4,6 +4,7 @@ import { FileJson, FolderOpen, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { api } from '@/shared/api';
+import { PROVIDER_MODELS_CHANGED_EVENT } from '@/shared/constants';
 import { Button, Input } from '@/shared/ui';
 import SettingsCard from '@/modules/settings/SettingsCard';
 import SettingsSection from '@/modules/settings/SettingsSection';
@@ -83,6 +84,10 @@ export default function ClaudeSettingsSourceSection() {
         setSource(body.data);
         setDirectoryInput(body.data.directory ?? '');
       }
+      // The active settings file can carry model mappings, so the catalog the
+      // chat composer cached at mount is now stale. The settings panel is a
+      // portal over an always-mounted chat, so no remount will pick this up.
+      window.dispatchEvent(new Event(PROVIDER_MODELS_CHANGED_EVENT));
     } catch (cause) {
       console.error('Failed to save Claude settings source:', cause);
       setError(t('agents.settingsSource.saveError', { defaultValue: 'Failed to save the Claude settings configuration.' }));

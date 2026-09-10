@@ -9,7 +9,7 @@ import type { PendingPermissionRequest, PermissionMode,
   ProviderModelActions,
   ProviderModelOption,
   ProviderModelsDefinition } from '@/shared/types';
-import { DEFAULT_EFFORT_VALUE } from '@/shared/constants';
+import { DEFAULT_EFFORT_VALUE, PROVIDER_MODELS_CHANGED_EVENT } from '@/shared/constants';
 import { readSelectedProvider, writeSelectedProvider } from '@/shared/selectedProvider';
 
 const FALLBACK_PROVIDER_EFFORT_VALUES: Partial<Record<LLMProvider, readonly string[]>> = {
@@ -238,6 +238,22 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
   useEffect(() => {
     void loadProviderModels();
+  }, [loadProviderModels]);
+
+  // This catalog is otherwise fetched once per app mount, but the settings panel
+  // is a portal over an always-mounted chat: changing the active provider
+  // settings file would leave the composer showing stale model labels until a
+  // page reload. Re-fetch when settings announce a change; `loadProviderModels`
+  // ignores superseded responses, so overlapping calls are safe.
+  useEffect(() => {
+    const handleProviderModelsChanged = () => {
+      void loadProviderModels();
+    };
+
+    window.addEventListener(PROVIDER_MODELS_CHANGED_EVENT, handleProviderModelsChanged);
+    return () => {
+      window.removeEventListener(PROVIDER_MODELS_CHANGED_EVENT, handleProviderModelsChanged);
+    };
   }, [loadProviderModels]);
 
   useEffect(() => {

@@ -4,6 +4,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, test, vi } from 'vitest';
 
 import { resetUserPreferences, writeUserPreference } from '@/shared/userSettings';
+import { PROVIDER_MODELS_CHANGED_EVENT } from '@/shared/constants';
 
 /**
  * The four per-provider default models used to be four useState slots with four
@@ -116,6 +117,50 @@ test('a fresh provider adopts the config-driven catalog default instead of its s
     assert.equal(result.current.providerModels.codex, 'configured-codex');
   });
   assert.equal(localStorage.getItem('codex-model'), 'configured-codex');
+});
+
+test('the provider models changed event re-fetches the catalog the composer cached at mount', async () => {
+  const claudeCatalog = (label: string) => ({
+    success: true,
+    data: {
+      models: {
+        OPTIONS: [{ value: 'sonnet', label }],
+        DEFAULT: 'sonnet',
+      },
+    },
+  });
+
+  providerModelsResponse.mockImplementation((provider: string) => (
+    okJson(provider === 'claude' ? claudeCatalog('Sonnet') : { success: true, data: null })
+  ));
+
+  const { result } = await renderProviderState();
+
+  await waitFor(() => {
+    assert.equal(result.current.providerModelCatalog.claude?.OPTIONS[0]?.label, 'Sonnet');
+  });
+  const callsAfterMount = providerModelsResponse.mock.calls.length;
+
+  // The settings panel saved a new active settings file, so the backend now
+  // folds a different alias mapping into Claude's catalog.
+  providerModelsResponse.mockImplementation((provider: string) => (
+    okJson(provider === 'claude' ? claudeCatalog('Sonnet → doubao-seed-2.1-turbo') : { success: true, data: null })
+  ));
+
+  act(() => {
+    window.dispatchEvent(new Event(PROVIDER_MODELS_CHANGED_EVENT));
+  });
+
+  await waitFor(() => {
+    assert.equal(
+      result.current.providerModelCatalog.claude?.OPTIONS[0]?.label,
+      'Sonnet → doubao-seed-2.1-turbo',
+    );
+  });
+  assert.ok(
+    providerModelsResponse.mock.calls.length > callsAfterMount,
+    'the announcement must trigger a fresh catalog request',
+  );
 });
 
 test('choosing a model persists it under that provider’s key only', async () => {
