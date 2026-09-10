@@ -3,7 +3,7 @@ import { useCallback, useState } from 'react';
 import { api } from '@/shared/api';
 import type { LLMProvider, ProviderAuthStatus, ProviderAuthStatusMap } from '@/shared/types';
 
-const CLI_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'dsh', 'workbuddy'];
+const CLI_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'dsh', 'workbuddy', 'pi'];
 
 const createInitialProviderAuthStatusMap = (loading = true): ProviderAuthStatusMap => ({
   claude: { installed: false, provider: 'claude', authenticated: false, email: null, method: null, error: null, loading },
@@ -12,6 +12,7 @@ const createInitialProviderAuthStatusMap = (loading = true): ProviderAuthStatusM
   opencode: { installed: false, provider: 'opencode', authenticated: false, email: null, method: null, error: null, loading },
   dsh: { installed: false, provider: 'dsh', authenticated: false, email: null, method: null, error: null, loading },
   workbuddy: { installed: false, provider: 'workbuddy', authenticated: false, email: null, method: null, error: null, loading },
+  pi: { installed: false, provider: 'pi', authenticated: false, email: null, method: null, error: null, loading },
 });
 
 type ProviderAuthStatusPayload = {

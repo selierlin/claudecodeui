@@ -44,6 +44,7 @@ const SEARCH_PROVIDER_LABELS: Record<string, string> = {
   opencode: 'OpenCode',
   dsh: 'DeepSeek Harness',
   workbuddy: 'WorkBuddy',
+  pi: 'Pi',
 };
 
 /**

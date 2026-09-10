@@ -15,6 +15,7 @@ const AGENT_NAMES: Record<AgentProvider, string> = {
   opencode: 'OpenCode',
   dsh: 'DeepSeek Harness',
   workbuddy: 'WorkBuddy',
+  pi: 'Pi',
 };
 
 /** Rendered by AgentsSettingsTab to pick which agent provider the tab is configuring. */
@@ -26,7 +27,8 @@ export default function AgentSelectorSection({
 }: AgentSelectorSectionProps) {
   return (
     <div className="flex-shrink-0 border-b border-border px-3 py-2 md:px-4 md:py-3">
-      <PillBar className="w-full md:w-auto">
+      {/* Wraps instead of scrolling horizontally so every agent stays visible on both mobile and desktop */}
+      <PillBar className="w-full flex-wrap">
         {agents.map((agent) => {
           const dotColor =
             agent === 'claude' ? 'bg-blue-500' :
@@ -38,10 +40,10 @@ export default function AgentSelectorSection({
               key={agent}
               isActive={selectedAgent === agent}
               onClick={() => onSelectAgent(agent)}
-              className="min-w-0 flex-1 justify-center md:flex-initial"
+              className="flex-shrink-0"
             >
               <LLMProviderLogo provider={agent} className="h-4 w-4 flex-shrink-0" />
-              <span className="truncate">{AGENT_NAMES[agent]}</span>
+              <span>{AGENT_NAMES[agent]}</span>
               {(agentContextById[agent].authStatus.authenticated
                 || (agentContextById[agent].authStatus.authVerified === false
                   && agentContextById[agent].authStatus.installed === true

@@ -202,7 +202,9 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                                   ? t('messageTypes.dsh', { defaultValue: 'DeepSeek Harness' })
                                   : provider === 'workbuddy'
                                       ? t('messageTypes.workbuddy', { defaultValue: 'WorkBuddy' })
-                                      : t('messageTypes.claude'))}
+                                      : provider === 'pi'
+                                          ? t('messageTypes.pi', { defaultValue: 'Pi' })
+                                          : t('messageTypes.claude'))}
               </div>
             </div>
           )}

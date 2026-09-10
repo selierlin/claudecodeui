@@ -4,6 +4,7 @@ import CodexLogo from '@/shared/ui/CodexLogo';
 import CursorLogo from '@/shared/ui/CursorLogo';
 import DshLogo from '@/shared/ui/DshLogo';
 import OpenCodeLogo from '@/shared/ui/OpenCodeLogo';
+import PiLogo from '@/shared/ui/PiLogo';
 import WorkbuddyLogo from '@/shared/ui/WorkbuddyLogo';
 
 type LLMProviderLogoProps = {
@@ -34,6 +35,10 @@ export function LLMProviderLogo({
 
   if (provider === 'workbuddy') {
     return <WorkbuddyLogo className={className} />;
+  }
+
+  if (provider === 'pi') {
+    return <PiLogo className={className} />;
   }
 
   return <ClaudeLogo className={className} />;

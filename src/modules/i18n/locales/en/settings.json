@@ -468,6 +468,9 @@
       },
       "workbuddy": {
         "description": "Tencent WorkBuddy agent"
+      },
+      "pi": {
+        "description": "Pi (pi.dev) coding agent"
       }
     },
     "connectionStatus": "Connection Status",
@@ -662,7 +665,8 @@
       "codex": "Model Context Protocol servers provide additional tools and data sources to Codex",
       "opencode": "Model Context Protocol servers provide additional tools and data sources to OpenCode",
       "dsh": "Model Context Protocol servers provide additional tools and data sources to DeepSeek Harness",
-      "workbuddy": "Model Context Protocol servers provide additional tools and data sources to WorkBuddy"
+      "workbuddy": "Model Context Protocol servers provide additional tools and data sources to WorkBuddy",
+      "pi": "Model Context Protocol servers provide additional tools and data sources to Pi"
     },
     "addButton": "Add MCP Server",
     "empty": "No MCP servers configured",

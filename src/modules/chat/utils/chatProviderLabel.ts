@@ -13,6 +13,8 @@ export function getChatProviderLabel(provider: string, t: ChatProviderTranslator
       return t('messageTypes.dsh', { defaultValue: 'DeepSeek Harness' });
     case 'workbuddy':
       return t('messageTypes.workbuddy', { defaultValue: 'WorkBuddy' });
+    case 'pi':
+      return t('messageTypes.pi', { defaultValue: 'Pi' });
     default:
       return t('messageTypes.claude');
   }

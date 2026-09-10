@@ -35,9 +35,10 @@ const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
   opencode: 'anthropic/claude-sonnet-4-5',
   dsh: 'deepseek-v4-pro',
   workbuddy: 'auto',
+  pi: 'deepseek/deepseek-v4-flash',
 };
 
-const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'dsh', 'workbuddy'];
+const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode', 'dsh', 'workbuddy', 'pi'];
 
 /** localStorage key holding the user's default model for one provider. */
 const providerModelStorageKey = (provider: LLMProvider): string => `${provider}-model`;
@@ -55,6 +56,7 @@ const FALLBACK_PERMISSION_MODES: Record<LLMProvider, PermissionMode[]> = {
   opencode: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
   dsh: ['default'],
   workbuddy: ['default', 'acceptEdits', 'bypassPermissions', 'plan'],
+  pi: ['default', 'readonly'],
 };
 
 type ProviderCapabilities = {

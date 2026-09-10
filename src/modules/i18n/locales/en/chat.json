@@ -26,7 +26,8 @@
     "codex": "Codex",
     "opencode": "OpenCode",
     "dsh": "DeepSeek Harness",
-    "workbuddy": "WorkBuddy"
+    "workbuddy": "WorkBuddy",
+    "pi": "Pi"
   },
   "tools": {
     "settings": "Tool Settings",
@@ -100,14 +101,19 @@
       "auto": "Auto Mode",
       "acceptEdits": "Accept Edits",
       "bypassPermissions": "Bypass Permissions",
-      "plan": "Plan Mode"
+      "plan": "Plan Mode",
+      "readonly": "Read-only"
     },
     "descriptions": {
       "default": "Only trusted commands (ls, cat, grep, git status, etc.) run automatically. Other commands are skipped. Can write to workspace.",
       "auto": "A model classifier decides per tool call whether to approve or deny. Hands-off, but safer than Bypass — denials still happen.",
       "acceptEdits": "All commands run automatically within the workspace. Full auto mode with sandboxed execution.",
       "bypassPermissions": "Full system access with no restrictions. All commands run automatically with full disk and network access. Use with caution.",
-      "plan": "Planning mode - no commands are executed"
+      "plan": "Planning mode - no commands are executed",
+      "readonly": "Only read-only tools (read, grep, find, ls) are allowed; the model cannot modify files.",
+      "pi": {
+        "default": "Pi runs tool calls autonomously without per-call approval."
+      }
     },
     "technicalDetails": "Technical details"
   },
@@ -211,7 +217,8 @@
       "opencode": "Ready to use OpenCode with {{model}}. Start typing your message below.",
       "default": "Select a provider above to begin",
       "dsh": "Ready to use DeepSeek Harness with {{model}}. Start typing your message below.",
-      "workbuddy": "Ready to use WorkBuddy with {{model}}. Start typing your message below."
+      "workbuddy": "Ready to use WorkBuddy with {{model}}. Start typing your message below.",
+      "pi": "Ready to use Pi with {{model}}. Start typing your message below."
     },
     "pressToSearch": "Press <kbd>{{shortcut}}</kbd> to search sessions, files, and commits",
     "chooseModel": "Choose a model",

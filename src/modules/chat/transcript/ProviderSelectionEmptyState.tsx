@@ -36,6 +36,7 @@ const PROVIDER_META: { id: LLMProvider; name: string }[] = [
   { id: "opencode", name: "OpenCode" },
   { id: "dsh", name: "DeepSeek Harness" },
   { id: "workbuddy", name: "WorkBuddy" },
+  { id: "pi", name: "Pi" },
 ];
 
 const MOD_KEY =
@@ -100,6 +101,7 @@ function getProviderDisplayName(p: LLMProvider) {
   if (p === "opencode") return "OpenCode";
   if (p === "dsh") return "DeepSeek Harness";
   if (p === "workbuddy") return "WorkBuddy";
+  if (p === "pi") return "Pi";
   return "Claude";
 }
 
@@ -407,6 +409,10 @@ export default function ProviderSelectionEmptyState({
                 dsh: t("providerSelection.readyPrompt.dsh", {
                   model: currentModelLabel,
                   defaultValue: "Ready with DeepSeek Harness {{model}}",
+                }),
+                pi: t("providerSelection.readyPrompt.pi", {
+                  model: currentModelLabel,
+                  defaultValue: "Ready with Pi {{model}}",
                 }),
                 workbuddy: t("providerSelection.readyPrompt.workbuddy", {
                   model: currentModelLabel,

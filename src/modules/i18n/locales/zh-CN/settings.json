@@ -451,6 +451,9 @@
       },
       "workbuddy": {
         "description": "腾讯 WorkBuddy 智能体"
+      },
+      "pi": {
+        "description": "Pi（pi.dev）编码智能体"
       }
     },
     "connectionStatus": "连接状态",
@@ -645,7 +648,8 @@
       "codex": "Model Context Protocol 服务器为 Codex 提供额外的工具和数据源",
       "opencode": "Model Context Protocol 服务器为 OpenCode 提供额外的工具和数据源",
       "dsh": "Model Context Protocol 服务器为 DeepSeek Harness 提供额外的工具和数据源",
-      "workbuddy": "Model Context Protocol 服务器为 WorkBuddy 提供额外的工具和数据源"
+      "workbuddy": "Model Context Protocol 服务器为 WorkBuddy 提供额外的工具和数据源",
+      "pi": "Model Context Protocol 服务器为 Pi 提供额外的工具和数据源"
     },
     "addButton": "添加 MCP 服务器",
     "empty": "未配置 MCP 服务器",

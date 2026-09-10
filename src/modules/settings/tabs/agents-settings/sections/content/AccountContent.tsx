@@ -70,6 +70,14 @@ const agentConfig: Record<AgentProvider, AgentVisualConfig> = {
     subtextClass: 'text-orange-700 dark:text-orange-300',
     buttonClass: 'bg-orange-600 hover:bg-orange-700 active:bg-orange-800',
   },
+  pi: {
+    name: 'Pi',
+    bgClass: 'bg-emerald-50 dark:bg-emerald-900/20',
+    borderClass: 'border-emerald-200 dark:border-emerald-800',
+    textClass: 'text-emerald-900 dark:text-emerald-100',
+    subtextClass: 'text-emerald-700 dark:text-emerald-300',
+    buttonClass: 'bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800',
+  },
 };
 
 /** Rendered by AgentCategoryContentSection for the "account" category to show sign-in state for one provider. */

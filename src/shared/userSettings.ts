@@ -27,6 +27,7 @@ export type UserPreferences = {
   opencodePermissions: unknown;
   dshPermissions: unknown;
   workbuddyPermissions: unknown;
+  piPermissions: unknown;
   codeEditorSettings: unknown;
   uiPreferences: unknown;
   selectedProvider: string;
@@ -69,6 +70,7 @@ const LEGACY_STORAGE_KEYS: Record<UserPreferenceKey, string> = {
   // interpret either provider's unrelated legacy configuration.
   dshPermissions: '',
   workbuddyPermissions: '',
+  piPermissions: '',
   // Unused: the four code-editor settings never shared one key, so they are
   // read by readLegacyCodeEditorSettings instead.
   codeEditorSettings: '',

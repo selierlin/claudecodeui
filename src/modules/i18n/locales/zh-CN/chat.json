@@ -26,7 +26,8 @@
     "codex": "Codex",
     "opencode": "OpenCode",
     "dsh": "DeepSeek Harness",
-    "workbuddy": "WorkBuddy"
+    "workbuddy": "WorkBuddy",
+    "pi": "Pi"
   },
   "tools": {
     "settings": "工具设置",
@@ -93,14 +94,19 @@
       "auto": "自动模式",
       "acceptEdits": "编辑模式",
       "bypassPermissions": "无限制模式",
-      "plan": "计划模式"
+      "plan": "计划模式",
+      "readonly": "只读模式"
     },
     "descriptions": {
       "default": "只有受信任的命令（ls、cat、grep、git status 等）自动运行。其他命令将被跳过。可以写入工作区。",
       "auto": "由模型分类器针对每次工具调用决定批准或拒绝。无需手动操作，但比无限制模式更安全——仍可能发生拒绝。",
       "acceptEdits": "工作区内的所有命令自动运行。完全自动模式，具有沙盒执行功能。",
       "bypassPermissions": "完全的系统访问，无限制。所有命令自动运行，具有完整的磁盘和网络访问权限。请谨慎使用。",
-      "plan": "计划模式 - 不执行任何命令"
+      "plan": "计划模式 - 不执行任何命令",
+      "readonly": "仅允许只读工具（read、grep、find、ls）执行，无法修改文件。",
+      "pi": {
+        "default": "Pi 自动执行工具调用，无需逐次审批。"
+      }
     },
     "technicalDetails": "技术细节"
   },
@@ -204,7 +210,8 @@
       "opencode": "准备好使用带有 {{model}} 的 OpenCode。请在下方开始输入您的消息。",
       "default": "请在上方选择一个提供者以开始",
       "dsh": "准备好使用带有 {{model}} 的 DeepSeek Harness。请在下方开始输入您的消息。",
-      "workbuddy": "准备好使用带有 {{model}} 的 WorkBuddy。请在下方开始输入您的消息。"
+      "workbuddy": "准备好使用带有 {{model}} 的 WorkBuddy。请在下方开始输入您的消息。",
+      "pi": "准备好使用带有 {{model}} 的 Pi。请在下方开始输入您的消息。"
     },
     "pressToSearch": "按 <kbd>{{shortcut}}</kbd> 搜索会话、文件和提交"
   },

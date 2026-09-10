@@ -41,6 +41,7 @@ const PROVIDER_LABELS: Record<LLMProvider, string> = {
   opencode: 'OpenCode',
   dsh: 'DeepSeek Harness',
   workbuddy: 'WorkBuddy',
+  pi: 'Pi',
 };
 
 type RecentConversationRowProps = {

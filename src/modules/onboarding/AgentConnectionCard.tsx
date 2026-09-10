@@ -32,7 +32,9 @@ export default function AgentConnectionCard({
     && status.installed === true
     && status.method === 'workbuddy_desktop';
   const available = status.authenticated || externallyManaged;
-  const canLogin = provider !== 'workbuddy' && !available && !status.loading;
+  // Pi's credentials live in its own `pi auth` flow, so the in-app login
+  // button is only useful for the CLIs that accept an interactive login here.
+  const canLogin = provider !== 'workbuddy' && provider !== 'pi' && !available && !status.loading;
   const containerClassName = available ? connectedClassName : 'border-border bg-card';
 
   const statusText = status.loading
@@ -41,7 +43,9 @@ export default function AgentConnectionCard({
       ? `${t('agents.externalAuth.available')} (${t('agents.externalAuth.managedByDesktop')})`
       : provider === 'workbuddy'
         ? t('agents.externalAuth.description', { agent: title })
-        : status.authenticated
+        : provider === 'pi'
+          ? t('agents.externalAuth.description', { agent: title })
+          : status.authenticated
           ? status.email || t('agents.authStatus.connected')
           : status.error === 'Cursor CLI not found or not installed' || status.error === 'Cursor CLI is not installed'
             ? t('agents.errors.cursorCliNotFound')

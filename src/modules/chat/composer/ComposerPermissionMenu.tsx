@@ -5,13 +5,14 @@ import {
   AlertTriangle,
   Bot,
   ClipboardList,
+  EyeOff,
   Hand,
   ShieldQuestion,
   Smile,
   type LucideIcon,
 } from 'lucide-react';
 
-import type { PermissionMode } from '@/shared/types';
+import type { LLMProvider, PermissionMode } from '@/shared/types';
 import { useComposerMenuAnchor } from '@/modules/chat/hooks/useComposerMenuAnchor';
 import {
   ComposerMenuHeading,
@@ -58,6 +59,13 @@ const MODE_APPEARANCE: Record<PermissionMode, ModeAppearance> = {
     trigger: 'border-primary/20 bg-primary/5 text-primary hover:bg-primary/10',
     item: 'text-primary',
   },
+  readonly: {
+    // Blue treatment, matching Claude's plan mode so read-only reads as the
+    // "no side effects" sibling of planning.
+    icon: EyeOff,
+    trigger: 'border-primary/20 bg-primary/5 text-primary hover:bg-primary/10',
+    item: 'text-primary',
+  },
 };
 
 const UNKNOWN_MODE: ModeAppearance = {
@@ -75,6 +83,8 @@ type ComposerPermissionMenuProps = {
   permissionModes: PermissionMode[];
   onSelectPermissionMode: (mode: PermissionMode) => void;
   providerLabel: string;
+  /** Provider id, used to look up provider-specific mode descriptions. */
+  provider: LLMProvider | string;
 };
 
 /**
@@ -86,6 +96,7 @@ function ComposerPermissionMenu({
   permissionModes,
   onSelectPermissionMode,
   providerLabel,
+  provider,
 }: ComposerPermissionMenuProps) {
   const { t } = useTranslation('chat');
   const [isOpen, setIsOpen] = useState(false);
@@ -127,12 +138,23 @@ function ComposerPermissionMenu({
           {permissionModes.map((mode) => {
             const appearance = getAppearance(mode);
             const ModeIcon = appearance.icon;
+            // A provider-scoped key (e.g. `codex.descriptions.pi.default`)
+            // overrides the shared mode description when the provider's
+            // semantics differ from the Claude-style default wording.
+            const sharedLabel = t(`codex.modes.${mode}`, { defaultValue: mode });
+            const label = provider
+              ? t(`codex.modes.${provider}.${mode}`, { defaultValue: sharedLabel })
+              : sharedLabel;
+            const sharedDescription = t(`codex.descriptions.${mode}`, { defaultValue: '' });
+            const description = provider
+              ? t(`codex.descriptions.${provider}.${mode}`, { defaultValue: sharedDescription })
+              : sharedDescription;
             return (
               <ComposerMenuItem
                 key={mode}
                 icon={<ModeIcon className="h-4 w-4" />}
-                label={t(`codex.modes.${mode}`, { defaultValue: mode })}
-                description={t(`codex.descriptions.${mode}`, { defaultValue: '' }) || undefined}
+                label={label}
+                description={description || undefined}
                 isSelected={mode === permissionMode}
                 onSelect={() => {
                   onSelectPermissionMode(mode);

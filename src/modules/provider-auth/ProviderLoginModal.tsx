@@ -59,15 +59,20 @@ const getProviderCommand = ({
     return 'opencode auth login';
   }
 
-  // dsh and workbuddy have no interactive terminal login: dsh reads the API
-  // key from the harness .env, workbuddy signs in through the desktop app.
-  // Never fall through to `claude /login`, which would mis-authenticate Claude.
+  // dsh, workbuddy and pi have no interactive terminal login: dsh reads the
+  // API key from the harness .env, workbuddy signs in through the desktop app,
+  // and pi manages credentials in `pi auth`. Never fall through to
+  // `claude /login`, which would mis-authenticate Claude.
   if (provider === 'dsh') {
     return 'echo "DSH authentication is configured via DEEPSEEK_API_KEY in the DSH harness .env file."';
   }
 
   if (provider === 'workbuddy') {
     return 'echo "WorkBuddy authentication is managed by the WorkBuddy desktop app. Sign in there and try again."';
+  }
+
+  if (provider === 'pi') {
+    return 'echo "Pi authentication is managed by `pi auth` in a terminal. Run it and try again."';
   }
 
   return 'claude --dangerously-skip-permissions /login';
@@ -80,6 +85,7 @@ const getProviderTitle = (provider: LLMProvider) => {
   if (provider === 'opencode') return 'OpenCode CLI Login';
   if (provider === 'dsh') return 'DSH Login';
   if (provider === 'workbuddy') return 'WorkBuddy Login';
+  if (provider === 'pi') return 'Pi Login';
   return 'Claude CLI Login';
 };
 

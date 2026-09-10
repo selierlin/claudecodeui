@@ -20,7 +20,8 @@ export default function AgentCategoryTabsSection({
 
   return (
     <div className="flex-shrink-0 border-b border-border">
-      <div role="tablist" className="flex overflow-x-auto px-2 md:px-4">
+      {/* Wraps instead of scrolling horizontally so every category stays visible on both mobile and desktop */}
+      <div role="tablist" className="flex flex-wrap px-2 md:px-4">
         {categories.map((category) => (
           <button
             key={category}
