@@ -122,9 +122,10 @@ test('a thinking delta buffers on the thinking channel, not the reply', () => {
   dispatch(delta('s', '正文', 'claude', 'text'));
   vi.advanceTimersByTime(100);
 
+  // The trace flushes before the reply so the store can order it above.
   assert.deepEqual(updateStreaming, [
-    ['s', 'text', '正文', 'claude'],
     ['s', 'thinking', '推理', 'claude'],
+    ['s', 'text', '正文', 'claude'],
   ]);
 });
 
@@ -153,8 +154,8 @@ test('stream_end flushes both channels before finalizing', () => {
   dispatch(streamEnd('s'));
 
   assert.deepEqual(updateStreaming, [
-    ['s', 'text', '正文', 'claude'],
     ['s', 'thinking', '推理', 'claude'],
+    ['s', 'text', '正文', 'claude'],
   ]);
   assert.deepEqual(finalizeStreaming, ['s']);
 });

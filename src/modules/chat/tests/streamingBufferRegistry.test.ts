@@ -79,8 +79,8 @@ test('reply and reasoning accumulate in separate channels', () => {
   vi.advanceTimersByTime(100);
 
   assert.deepEqual(flushCalls, [
-    { sessionId: 's1', text: '答案', provider: 'claude', channel: 'text' },
     { sessionId: 's1', text: '想一下', provider: 'claude', channel: 'thinking' },
+    { sessionId: 's1', text: '答案', provider: 'claude', channel: 'text' },
   ]);
 });
 
@@ -92,8 +92,8 @@ test('flushNow publishes every non-empty channel of one session', () => {
   registry.flushNow('s1');
 
   assert.deepEqual(flushCalls, [
-    { sessionId: 's1', text: '正文', provider: 'claude', channel: 'text' },
     { sessionId: 's1', text: '推理', provider: 'claude', channel: 'thinking' },
+    { sessionId: 's1', text: '正文', provider: 'claude', channel: 'text' },
   ]);
 });
 

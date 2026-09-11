@@ -69,11 +69,14 @@ export function createStreamingBufferRegistry(
   };
 
   const flushBuffer = (sessionId: string, buffer: StreamBuffer): void => {
-    if (buffer.text) {
-      flush(sessionId, buffer.text, buffer.provider, 'text');
-    }
+    // The reasoning trace is produced before the reply it precedes, and the
+    // store stamps each row when it is first created. Flushing the trace first
+    // therefore orders it above the reply instead of below it.
     if (buffer.thinking) {
       flush(sessionId, buffer.thinking, buffer.provider, 'thinking');
+    }
+    if (buffer.text) {
+      flush(sessionId, buffer.text, buffer.provider, 'text');
     }
   };
 

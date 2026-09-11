@@ -862,16 +862,19 @@ export function useSessionStore() {
   const updateStreaming = useCallback((sessionId: string, accumulatedText: string, msgProvider: LLMProvider, channel: StreamChannel = 'text') => {
     const slot = getSlot(sessionId);
     const streamId = channel === 'thinking' ? `__streaming_thinking_${sessionId}` : `__streaming_${sessionId}`;
+    const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
     const msg: NormalizedMessage = {
       id: streamId,
       sessionId,
-      timestamp: new Date().toISOString(),
+      // Freeze the row's first timestamp. Re-stamping on every update let the
+      // channel flushed later drift past the other one and swap their order,
+      // so the reasoning row ended up below the reply until a refresh.
+      timestamp: idx >= 0 ? slot.realtimeMessages[idx].timestamp : new Date().toISOString(),
       provider: msgProvider,
       kind: 'stream_delta',
       streamChannel: channel,
       content: accumulatedText,
     };
-    const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
     if (idx >= 0) {
       slot.realtimeMessages = [...slot.realtimeMessages];
       slot.realtimeMessages[idx] = msg;

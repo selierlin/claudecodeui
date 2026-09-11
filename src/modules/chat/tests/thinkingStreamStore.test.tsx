@@ -93,6 +93,39 @@ describe('thinking stream channel', () => {
     );
   });
 
+  it('keeps the trace above the reply when the trace updates last', async () => {
+    const { result } = await loadedStore();
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-01-01T00:00:10.000Z'));
+      act(() => {
+        result.current.updateStreaming('session-1', '推理', 'claude', 'thinking');
+      });
+      vi.setSystemTime(new Date('2026-01-01T00:00:10.050Z'));
+      act(() => {
+        result.current.updateStreaming('session-1', '正文', 'claude', 'text');
+      });
+      // A later trace update must not re-stamp it past the reply row, or the
+      // two swap once the transcript is re-sorted.
+      vi.setSystemTime(new Date('2026-01-01T00:00:10.200Z'));
+      act(() => {
+        result.current.updateStreaming('session-1', '推理更多', 'claude', 'thinking');
+      });
+
+      const streamed = result.current
+        .getMessages('session-1')
+        .filter((message) => message.kind === 'stream_delta');
+      assert.deepEqual(
+        streamed.map((message) => message.streamChannel),
+        ['thinking', 'text'],
+      );
+      assert.equal(streamed[0].timestamp, '2026-01-01T00:00:10.000Z');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('finalizes the trace into a thinking row and the reply into a text row', async () => {
     const { result } = await loadedStore();
 
