@@ -686,8 +686,32 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       return [];
     }
 
-    if (raw.type === 'content_block_delta' && raw.delta?.text) {
-      return [createNormalizedMessage({ kind: 'stream_delta', content: raw.delta.text, sessionId, provider: PROVIDER })];
+    if (raw.type === 'content_block_delta') {
+      const delta = raw.delta;
+      // Two channels share the `stream_delta` kind: the assistant's visible
+      // reply (`text_delta`) and its reasoning trace (`thinking_delta`). The
+      // channel travels with the frame so the client can buffer them into
+      // separate rows; conflating them used to drop every thinking delta on
+      // the floor because only `delta.text` was read.
+      if (delta?.type === 'thinking_delta' && typeof delta.thinking === 'string' && delta.thinking) {
+        return [createNormalizedMessage({
+          kind: 'stream_delta',
+          streamChannel: 'thinking',
+          content: delta.thinking,
+          sessionId,
+          provider: PROVIDER,
+        })];
+      }
+      if (delta?.type === 'text_delta' && typeof delta.text === 'string' && delta.text) {
+        return [createNormalizedMessage({
+          kind: 'stream_delta',
+          streamChannel: 'text',
+          content: delta.text,
+          sessionId,
+          provider: PROVIDER,
+        })];
+      }
+      return [];
     }
     // `stream_end` marks the end of a reply, so it must fire once per assistant
     // message: `message_stop`, not `content_block_stop` (which fires once per

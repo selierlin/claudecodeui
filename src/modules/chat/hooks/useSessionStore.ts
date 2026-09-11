@@ -10,7 +10,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { api } from '@/shared/api';
-import type { LLMProvider, NormalizedMessage } from '@/shared/types';
+import type { LLMProvider, NormalizedMessage, StreamChannel } from '@/shared/types';
 import { removeOptimisticUserEchoes, upsertRealtimeMessages } from '@/modules/chat/utils/sessionMessageReconciliation';
 import {
   hasReachedCachedTailTimeBoundary,
@@ -227,10 +227,11 @@ function findServerTurnRangeByOrdinal(
   return { start, end };
 }
 
-function isAssistantTextEchoedInSameTurnOnServer(
+function isContentEchoedInSameTurnOnServer(
   message: NormalizedMessage,
   serverMessages: NormalizedMessage[],
   realtimeMessages: NormalizedMessage[],
+  matchesServerRow: (serverMessage: NormalizedMessage) => boolean,
 ): boolean {
   const assistantText = (message.content || '').trim();
   if (!assistantText) {
@@ -246,10 +247,41 @@ function isAssistantTextEchoedInSameTurnOnServer(
   return serverMessages
     .slice(turnRange.start + 1, turnRange.end)
     .some((serverMessage) =>
-      serverMessage.kind === 'text'
-      && serverMessage.role === 'assistant'
+      matchesServerRow(serverMessage)
       && (serverMessage.content || '').trim() === assistantText,
     );
+}
+
+function isAssistantTextEchoedInSameTurnOnServer(
+  message: NormalizedMessage,
+  serverMessages: NormalizedMessage[],
+  realtimeMessages: NormalizedMessage[],
+): boolean {
+  return isContentEchoedInSameTurnOnServer(
+    message,
+    serverMessages,
+    realtimeMessages,
+    (serverMessage) => serverMessage.kind === 'text' && serverMessage.role === 'assistant',
+  );
+}
+
+/**
+ * Reasoning traces live on their own `thinking` rows, so the text echo check
+ * never matches them. Without this, a thinking row streamed live stays beside
+ * the persisted row it later becomes — the same duplicate the text channel
+ * already guards against, just invisible until the panel is expanded.
+ */
+function isThinkingEchoedInSameTurnOnServer(
+  message: NormalizedMessage,
+  serverMessages: NormalizedMessage[],
+  realtimeMessages: NormalizedMessage[],
+): boolean {
+  return isContentEchoedInSameTurnOnServer(
+    message,
+    serverMessages,
+    realtimeMessages,
+    (serverMessage) => serverMessage.kind === 'thinking',
+  );
 }
 
 /**
@@ -273,11 +305,29 @@ function dedupeAdjacentAssistantEchoes(merged: NormalizedMessage[]): NormalizedM
         }
       }
       if (
-        prev.kind === 'text'
-        && m.kind === 'text'
-        && prev.role === 'assistant'
-        && m.role === 'assistant'
+        prev.kind === 'stream_delta'
+        && prev.streamChannel === 'thinking'
+        && m.kind === 'thinking'
       ) {
+        const ps = (prev.content || '').trim();
+        const ms = (m.content || '').trim();
+        if (ps.length > 0 && ps === ms) {
+          out[out.length - 1] = m;
+          continue;
+        }
+      }
+      if (
+        m.kind === 'text'
+        && prev.kind === 'text'
+        && m.role === 'assistant'
+        && prev.role === 'assistant'
+      ) {
+        const ms = (m.content || '').trim();
+        if (ms.length > 0 && ms === (prev.content || '').trim()) {
+          continue;
+        }
+      }
+      if (prev.kind === 'thinking' && m.kind === 'thinking') {
         const ms = (m.content || '').trim();
         if (ms.length > 0 && ms === (prev.content || '').trim()) {
           continue;
@@ -309,6 +359,14 @@ function pruneRealtimeSupersededByServer(
   return reconciledRealtimeMessages.filter((message) => {
     if (serverIds.has(message.id)) {
       return false;
+    }
+
+    // A live reasoning row is superseded by the persisted `thinking` row the
+    // same way a reply is; without this it survives every refresh and doubles.
+    const isThinkingRow = message.kind === 'thinking'
+      || (message.kind === 'stream_delta' && message.streamChannel === 'thinking');
+    if (isThinkingRow) {
+      return !isThinkingEchoedInSameTurnOnServer(message, serverMessages, realtimeMessages);
     }
 
     if (message.kind === 'stream_delta' || message.id === `__streaming_${message.sessionId}`) {
@@ -798,17 +856,19 @@ export function useSessionStore() {
 
   /**
    * Update or create a streaming message (accumulated text so far).
-   * Uses a well-known ID so subsequent calls replace the same message.
+   * Uses a well-known id per channel so subsequent calls replace the same row:
+   * the reply and the reasoning trace finalize into two distinct rows.
    */
-  const updateStreaming = useCallback((sessionId: string, accumulatedText: string, msgProvider: LLMProvider) => {
+  const updateStreaming = useCallback((sessionId: string, accumulatedText: string, msgProvider: LLMProvider, channel: StreamChannel = 'text') => {
     const slot = getSlot(sessionId);
-    const streamId = `__streaming_${sessionId}`;
+    const streamId = channel === 'thinking' ? `__streaming_thinking_${sessionId}` : `__streaming_${sessionId}`;
     const msg: NormalizedMessage = {
       id: streamId,
       sessionId,
       timestamp: new Date().toISOString(),
       provider: msgProvider,
       kind: 'stream_delta',
+      streamChannel: channel,
       content: accumulatedText,
     };
     const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
@@ -823,23 +883,41 @@ export function useSessionStore() {
   }, [getSlot, notify]);
 
   /**
-   * Finalize streaming: convert the streaming message to a regular text message.
-   * The well-known streaming ID is replaced with a unique text message ID.
+   * Finalize streaming: convert each channel's placeholder to a regular row.
+   * The reply becomes an assistant `text` row; the reasoning trace becomes a
+   * `thinking` row, matching how history normalization represents it. The
+   * well-known ids are replaced with unique ids.
    */
   const finalizeStreaming = useCallback((sessionId: string) => {
     const slot = storeRef.current.get(sessionId);
     if (!slot) return;
-    const streamId = `__streaming_${sessionId}`;
-    const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
-    if (idx >= 0) {
-      const stream = slot.realtimeMessages[idx];
-      slot.realtimeMessages = [...slot.realtimeMessages];
-      slot.realtimeMessages[idx] = {
+
+    const targets: Array<{ streamId: string; finalKind: 'text' | 'thinking' }> = [
+      { streamId: `__streaming_${sessionId}`, finalKind: 'text' },
+      { streamId: `__streaming_thinking_${sessionId}`, finalKind: 'thinking' },
+    ];
+
+    let next = slot.realtimeMessages;
+    let changed = false;
+    for (const { streamId, finalKind } of targets) {
+      const idx = next.findIndex(m => m.id === streamId);
+      if (idx < 0) continue;
+      if (!changed) {
+        next = [...next];
+        changed = true;
+      }
+      const stream = next[idx];
+      next[idx] = {
         ...stream,
-        id: `text_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-        kind: 'text',
-        role: 'assistant',
+        id: `${finalKind}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        kind: finalKind,
+        streamChannel: undefined,
+        role: finalKind === 'text' ? 'assistant' : undefined,
       };
+    }
+
+    if (changed) {
+      slot.realtimeMessages = next;
       recomputeMergedIfNeeded(slot);
       notify(sessionId);
     }

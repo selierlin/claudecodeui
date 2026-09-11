@@ -446,6 +446,12 @@ export type NormalizedMessage = {
   role?: 'user' | 'assistant';
   content?: string;
   /**
+   * Which stream this `stream_delta` carries. `text` (also the meaning when
+   * absent) is the assistant's reply; `thinking` is its reasoning trace.
+   * Drives which buffer and which placeholder row the delta lands in.
+   */
+  streamChannel?: StreamChannel;
+  /**
    * Mirrors optional transcript metadata from the server.
    *
    * These fields are currently used by Claude history normalization so local
@@ -508,6 +514,9 @@ type MessageKind =
   | 'session_created'
   | 'history_truncated'
   | 'task_notification';
+
+/** Which stream a `stream_delta` frame belongs to: the assistant's visible reply (`text`) or its reasoning trace (`thinking`). They buffer into separate rows. */
+export type StreamChannel = 'text' | 'thinking';
 
 // ---------------------------
 

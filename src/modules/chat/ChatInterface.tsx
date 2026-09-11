@@ -92,8 +92,8 @@ function ChatInterface({
   // Session-keyed streaming buffer. The lazy initializer runs exactly once, so
   // a single registry backs every render.
   const [streamBuffers] = useState<StreamingBufferRegistry>(() =>
-    createStreamingBufferRegistry((sessionId, text, provider) => {
-      sessionStoreRef.current.updateStreaming(sessionId, text, provider);
+    createStreamingBufferRegistry((sessionId, text, provider, channel) => {
+      sessionStoreRef.current.updateStreaming(sessionId, text, provider, channel);
     }));
   // When each session's `chat.subscribe` was last sent; idle acks older than
   // a later local request are discarded as stale.

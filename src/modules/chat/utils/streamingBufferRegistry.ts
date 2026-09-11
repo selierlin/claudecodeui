@@ -1,4 +1,4 @@
-import type { LLMProvider } from '@/shared/types';
+import type { LLMProvider, StreamChannel } from '@/shared/types';
 
 /**
  * Debounce window for coalescing incoming deltas into one store write. Kept in
@@ -7,12 +7,13 @@ import type { LLMProvider } from '@/shared/types';
 const STREAMING_FLUSH_INTERVAL_MS = 100;
 
 /**
- * One session's in-flight reply. Text and provider are stored per session so
- * two sessions streaming at once never share state; `timer` is the debounce
- * handle that publishes the accumulated text.
+ * One session's in-flight reply. The reply text and the reasoning trace are
+ * accumulated as separate channels so they finalize into two rows rather than
+ * concatenating reasoning into the reply; `provider` and `timer` are shared.
  */
 type StreamBuffer = {
   text: string;
+  thinking: string;
   provider: LLMProvider;
   timer: number | null;
 };
@@ -25,15 +26,16 @@ type StreamBuffer = {
  */
 export type StreamingBufferRegistry = {
   /**
-   * Appends a delta, arming the debounce timer on the first one. No-ops on an
-   * empty session id or empty text, so a delta-less frame cannot create a stub
-   * row later.
+   * Appends a delta to one of the session's channels, arming the debounce
+   * timer on the first one. No-ops on an empty session id or empty text, so a
+   * delta-less frame cannot create a stub row later. `channel` defaults to
+   * `text` for providers that only stream a reply.
    */
-  append: (sessionId: string, text: string, provider: LLMProvider) => void;
+  append: (sessionId: string, text: string, provider: LLMProvider, channel?: StreamChannel) => void;
   /**
-   * Cancels the debounce and publishes the accumulated text immediately.
-   * No-ops when the session has no buffer or the buffer is empty — this is what
-   * keeps a tool-only `stream_end` from writing an empty placeholder row.
+   * Cancels the debounce and publishes every non-empty channel immediately.
+   * No-ops when the session has no buffer — this is what keeps a tool-only
+   * `stream_end` from writing an empty placeholder row.
    */
   flushNow: (sessionId: string) => void;
   /** Cancels the debounce and discards the buffer without publishing. */
@@ -48,13 +50,14 @@ export type StreamingBufferRegistry = {
  * Creates the session-keyed streaming buffer used by `ChatInterface` and
  * `useChatRealtimeHandlers`.
  *
- * `flush` receives the accumulated text together with the provider recorded at
- * append time. The provider must travel with the message rather than being
- * captured from a hook-scope closure: a background session running a different
- * provider would otherwise stamp its row with the viewed session's provider.
+ * `flush` receives one accumulated channel at a time, together with the
+ * provider recorded at append time. The provider must travel with the message
+ * rather than being captured from a hook-scope closure: a background session
+ * running a different provider would otherwise stamp its row with the viewed
+ * session's provider.
  */
 export function createStreamingBufferRegistry(
-  flush: (sessionId: string, text: string, provider: LLMProvider) => void,
+  flush: (sessionId: string, text: string, provider: LLMProvider, channel: StreamChannel) => void,
 ): StreamingBufferRegistry {
   const buffers = new Map<string, StreamBuffer>();
 
@@ -65,25 +68,39 @@ export function createStreamingBufferRegistry(
     }
   };
 
-  const append = (sessionId: string, text: string, provider: LLMProvider): void => {
+  const flushBuffer = (sessionId: string, buffer: StreamBuffer): void => {
+    if (buffer.text) {
+      flush(sessionId, buffer.text, buffer.provider, 'text');
+    }
+    if (buffer.thinking) {
+      flush(sessionId, buffer.thinking, buffer.provider, 'thinking');
+    }
+  };
+
+  const append = (
+    sessionId: string,
+    text: string,
+    provider: LLMProvider,
+    channel: StreamChannel = 'text',
+  ): void => {
     if (!sessionId || !text) {
       return;
     }
 
     let buffer = buffers.get(sessionId);
     if (!buffer) {
-      buffer = { text: '', provider, timer: null };
+      buffer = { text: '', thinking: '', provider, timer: null };
       buffers.set(sessionId, buffer);
     }
 
     buffer.provider = provider;
-    buffer.text += text;
+    buffer[channel] += text;
 
     if (buffer.timer === null) {
       const target = buffer;
       target.timer = window.setTimeout(() => {
         target.timer = null;
-        flush(sessionId, target.text, target.provider);
+        flushBuffer(sessionId, target);
       }, STREAMING_FLUSH_INTERVAL_MS);
     }
   };
@@ -95,9 +112,7 @@ export function createStreamingBufferRegistry(
     }
 
     clearTimer(buffer);
-    if (buffer.text) {
-      flush(sessionId, buffer.text, buffer.provider);
-    }
+    flushBuffer(sessionId, buffer);
   };
 
   const drop = (sessionId: string): void => {

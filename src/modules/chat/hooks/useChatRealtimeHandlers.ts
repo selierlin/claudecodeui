@@ -200,7 +200,11 @@ export function useChatRealtimeHandlers({
       if (msg.kind === 'stream_delta') {
         const text = (msg.content as string) || '';
         if (!sid || !text) return;
-        streamBuffers.append(sid, text, msg.provider as LLMProvider);
+        // The channel travels with the frame: a `thinking` delta buffers into
+        // its own row, anything else is the reply. Absent means reply, for
+        // providers that only stream text.
+        const channel = msg.streamChannel === 'thinking' ? 'thinking' : 'text';
+        streamBuffers.append(sid, text, msg.provider as LLMProvider, channel);
         return;
       }
 

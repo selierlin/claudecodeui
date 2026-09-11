@@ -336,6 +336,9 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
             content: msg.content,
             timestamp: msg.timestamp,
             isStreaming: true,
+            // A reasoning trace streams on the same kind but must render as the
+            // Reasoning panel, not as reply prose.
+            isThinking: msg.streamChannel === 'thinking',
             ...sharedMetadata,
           });
         }

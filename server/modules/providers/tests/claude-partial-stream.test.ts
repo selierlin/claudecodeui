@@ -84,7 +84,7 @@ test('transformMessage keeps parent_tool_use_id across the unwrap', () => {
   assert.equal(transformed.event, undefined);
 });
 
-test('a text_delta becomes exactly one stream_delta', () => {
+test('a text_delta becomes exactly one text-channel stream_delta', () => {
   const messages = normalizeIncoming({
     type: 'stream_event',
     parent_tool_use_id: null,
@@ -93,22 +93,30 @@ test('a text_delta becomes exactly one stream_delta', () => {
 
   assert.equal(messages.length, 1);
   assert.equal(messages[0].kind, 'stream_delta');
+  assert.equal(messages[0].streamChannel, 'text');
   assert.equal(messages[0].content, 'chunk');
 });
 
-test('thinking_delta and input_json_delta produce no messages', () => {
-  const thinking = normalizeIncoming({
+test('a thinking_delta becomes a thinking-channel stream_delta', () => {
+  const messages = normalizeIncoming({
     type: 'stream_event',
     parent_tool_use_id: null,
-    event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '…' } },
+    event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'reasoning' } },
   });
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].kind, 'stream_delta');
+  assert.equal(messages[0].streamChannel, 'thinking');
+  assert.equal(messages[0].content, 'reasoning');
+});
+
+test('non-text deltas (input_json_delta) produce no messages', () => {
   const inputJson = normalizeIncoming({
     type: 'stream_event',
     parent_tool_use_id: null,
     event: { type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"a"' } },
   });
 
-  assert.deepEqual(thinking, []);
   assert.deepEqual(inputJson, []);
 });
 
@@ -136,6 +144,8 @@ test('content_block_stop no longer produces a stream_end', () => {
 
 test('subagent stream_delta / stream_end are dropped', () => {
   assert.equal(isSubagentPartialEvent({ kind: 'stream_delta', parentToolUseId: 'toolu_1' }), true);
+  // A subagent's reasoning rides the same kind, so it is covered too.
+  assert.equal(isSubagentPartialEvent({ kind: 'stream_delta', streamChannel: 'thinking', parentToolUseId: 'toolu_1' }), true);
   assert.equal(isSubagentPartialEvent({ kind: 'stream_end', parentToolUseId: 'toolu_1' }), true);
   assert.equal(isSubagentPartialEvent({ kind: 'stream_delta' }), false);
 });

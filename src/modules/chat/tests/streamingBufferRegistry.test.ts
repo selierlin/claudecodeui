@@ -3,23 +3,23 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test, vi } from 'vitest';
 
 import { createStreamingBufferRegistry } from '@/modules/chat/utils/streamingBufferRegistry';
-import type { LLMProvider } from '@/shared/types';
+import type { LLMProvider, StreamChannel } from '@/shared/types';
 
 /**
  * The streaming buffer coalesces each session's deltas into a single store
  * write every 100ms. These tests pin the coalescing window, the per-session
- * isolation, and the no-op rules that stop delta-less frames from creating
- * stub rows.
+ * isolation, the reply/reasoning channel split, and the no-op rules that stop
+ * delta-less frames from creating stub rows.
  */
 
-type FlushCall = { sessionId: string; text: string; provider: LLMProvider };
+type FlushCall = { sessionId: string; text: string; provider: LLMProvider; channel: StreamChannel };
 
 const flushCalls: FlushCall[] = [];
 
 const create = () => {
   flushCalls.length = 0;
-  return createStreamingBufferRegistry((sessionId, text, provider) => {
-    flushCalls.push({ sessionId, text, provider });
+  return createStreamingBufferRegistry((sessionId, text, provider, channel) => {
+    flushCalls.push({ sessionId, text, provider, channel });
   });
 };
 
@@ -41,7 +41,7 @@ test('coalesces deltas inside the 100ms window into one flush', () => {
 
   vi.advanceTimersByTime(100);
 
-  assert.deepEqual(flushCalls, [{ sessionId: 's1', text: '你好', provider: 'claude' }]);
+  assert.deepEqual(flushCalls, [{ sessionId: 's1', text: '你好', provider: 'claude', channel: 'text' }]);
 });
 
 test('keeps an independent buffer and provider per session', () => {
@@ -52,8 +52,8 @@ test('keeps an independent buffer and provider per session', () => {
   vi.advanceTimersByTime(100);
 
   assert.deepEqual(flushCalls, [
-    { sessionId: 's1', text: 'A', provider: 'claude' },
-    { sessionId: 's2', text: 'B', provider: 'cursor' },
+    { sessionId: 's1', text: 'A', provider: 'claude', channel: 'text' },
+    { sessionId: 's2', text: 'B', provider: 'cursor', channel: 'text' },
   ]);
 });
 
@@ -63,10 +63,48 @@ test('flushNow cancels the debounce and publishes immediately', () => {
   registry.append('s1', 'partial', 'claude');
   registry.flushNow('s1');
 
-  assert.deepEqual(flushCalls, [{ sessionId: 's1', text: 'partial', provider: 'claude' }]);
+  assert.deepEqual(flushCalls, [{ sessionId: 's1', text: 'partial', provider: 'claude', channel: 'text' }]);
 
   vi.advanceTimersByTime(100);
   assert.equal(flushCalls.length, 1, 'the cancelled timer must not flush a second time');
+});
+
+test('reply and reasoning accumulate in separate channels', () => {
+  const registry = create();
+
+  registry.append('s1', '想', 'claude', 'thinking');
+  registry.append('s1', '一下', 'claude', 'thinking');
+  registry.append('s1', '答', 'claude', 'text');
+  registry.append('s1', '案', 'claude', 'text');
+  vi.advanceTimersByTime(100);
+
+  assert.deepEqual(flushCalls, [
+    { sessionId: 's1', text: '答案', provider: 'claude', channel: 'text' },
+    { sessionId: 's1', text: '想一下', provider: 'claude', channel: 'thinking' },
+  ]);
+});
+
+test('flushNow publishes every non-empty channel of one session', () => {
+  const registry = create();
+
+  registry.append('s1', '正文', 'claude', 'text');
+  registry.append('s1', '推理', 'claude', 'thinking');
+  registry.flushNow('s1');
+
+  assert.deepEqual(flushCalls, [
+    { sessionId: 's1', text: '正文', provider: 'claude', channel: 'text' },
+    { sessionId: 's1', text: '推理', provider: 'claude', channel: 'thinking' },
+  ]);
+});
+
+test('a thinking-only buffer still counts as a held session', () => {
+  const registry = create();
+
+  registry.append('s1', '推理', 'claude', 'thinking');
+  assert.equal(registry.has('s1'), true);
+
+  registry.flushNow('s1');
+  assert.deepEqual(flushCalls, [{ sessionId: 's1', text: '推理', provider: 'claude', channel: 'thinking' }]);
 });
 
 test('append and flushNow ignore empty text so no stub row is written', () => {
@@ -118,7 +156,7 @@ test('a dropped session starts its next cycle from empty text', () => {
   vi.advanceTimersByTime(100);
 
   assert.deepEqual(flushCalls, [
-    { sessionId: 's1', text: 'first', provider: 'claude' },
-    { sessionId: 's1', text: 'second', provider: 'claude' },
+    { sessionId: 's1', text: 'first', provider: 'claude', channel: 'text' },
+    { sessionId: 's1', text: 'second', provider: 'claude', channel: 'text' },
   ]);
 });

@@ -440,6 +440,10 @@ export function isSubagentPromptEcho(message) {
  * placeholder mid-flight. Full `tool_use` / `tool_result` frames are
  * deliberately exempt — subagent grouping depends on them, and they are the
  * only subagent traffic forwarded today.
+ *
+ * Thinking deltas need no separate case: they ride the same `stream_delta`
+ * kind (distinguished by `streamChannel`), so this predicate already drops a
+ * subagent's reasoning before it can leak into the main thread's thinking row.
  * @param {Object} message - Normalized message about to be sent to the client
  * @returns {boolean}
  */

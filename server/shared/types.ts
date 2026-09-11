@@ -214,6 +214,17 @@ export type MessageKind =
   | 'task_notification';
 
 /**
+ * Which stream a `stream_delta` frame belongs to.
+ *
+ * An assistant response emits one stream for its visible reply (`text`) and,
+ * when extended thinking is on, a second for its reasoning trace
+ * (`thinking`). They are kept as separate channels so a client can buffer and
+ * finalize them into distinct rows instead of concatenating reasoning into the
+ * reply text.
+ */
+export type StreamChannel = 'text' | 'thinking';
+
+/**
  * Event kinds added by the chat gateway layer on top of provider message kinds.
  *
  * These are app-level realtime events (subscription acks, sidebar deltas,
@@ -303,6 +314,12 @@ export type NormalizedMessage = {
   seq?: number;
   role?: 'user' | 'assistant';
   content?: string;
+  /**
+   * Which stream this `stream_delta` carries. `text` (also the meaning when
+   * absent) is the assistant's reply; `thinking` is its reasoning trace.
+   * Never set on history rows or on any other kind.
+   */
+  streamChannel?: StreamChannel;
   /**
    * Optional display-oriented metadata used by providers that need to expose
    * richer transcript artifacts without introducing a brand-new message kind.
