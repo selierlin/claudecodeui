@@ -140,7 +140,25 @@ async function spawnOpenCode(command, options = {}, ws, context) {
     // OpenCode emits assistant text as `stream_delta` frames; coalesce them the
     // same way the Claude runtime does so a long reply cannot overrun this
     // run's replay buffer. `send` is the only outbound path below.
-    const deltaBatcher = createDeltaBatcher((message) => ws.send(message));
+    //
+    // `streamHalted` becomes true once this run must publish nothing further:
+    // its terminal `complete` has gone out through the batcher, or the user
+    // aborted it (the abort handler emits that terminal `complete` directly,
+    // bypassing this batcher, so it arms the flag through `haltStream` below).
+    // A delta surfacing afterwards would resurrect the client's finalized
+    // placeholder row, so it is dropped rather than sent. Only `complete`
+    // counts, not `error`: stderr diagnostics are forwarded as error frames
+    // mid-run and must not stop the stream that follows them.
+    let streamHalted = false;
+    const deltaBatcher = createDeltaBatcher((message) => {
+      if (message.kind === 'complete') {
+        streamHalted = true;
+      }
+      if (message.kind === 'stream_delta' && streamHalted) {
+        return;
+      }
+      ws.send(message);
+    });
     const send = (message) => deltaBatcher.send(message);
 
     // Callers pass the stable app session id; the CLI resumes with the
@@ -302,6 +320,13 @@ async function spawnOpenCode(command, options = {}, ws, context) {
 
       activeOpenCodeProcesses.set(processKey, opencodeProcess);
       opencodeProcess.sessionId = processKey;
+      // Armed by `abortOpenCodeSession` before the abort handler emits this
+      // run's terminal `complete` on its behalf, so a delta still buffered in
+      // the coalescer — or emitted as the process dies — cannot land after it.
+      opencodeProcess.haltStream = () => {
+        streamHalted = true;
+        deltaBatcher.dispose();
+      };
       opencodeProcess.stdin.end();
 
       opencodeProcess.stdout.on('data', (data) => {
@@ -421,8 +446,10 @@ function abortOpenCodeSession(sessionId) {
   }
 
   // The abort handler sends the terminal complete (aborted: true); flag the
-  // process so its close handler does not emit a second one.
+  // process so its close handler does not emit a second one, and halt the
+  // stream so a buffered delta cannot land after that complete.
   process.aborted = true;
+  process.haltStream?.();
   process.kill('SIGTERM');
   activeOpenCodeProcesses.delete(sessionId);
   return true;
