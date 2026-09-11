@@ -9,7 +9,7 @@ import {
   normalizeAttachmentDescriptors
 } from '@/shared/image-attachments.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
-import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, getOpenCodeDatabasePath } from '@/shared/utils.js';
+import { createCompleteMessage, createDeltaBatcher, createNormalizedMessage, flattenPromptForWindowsShell, getOpenCodeDatabasePath } from '@/shared/utils.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
@@ -136,6 +136,13 @@ async function spawnOpenCode(command, options = {}, ws, context) {
       files,
       permissionMode
     } = options;
+
+    // OpenCode emits assistant text as `stream_delta` frames; coalesce them the
+    // same way the Claude runtime does so a long reply cannot overrun this
+    // run's replay buffer. `send` is the only outbound path below.
+    const deltaBatcher = createDeltaBatcher((message) => ws.send(message));
+    const send = (message) => deltaBatcher.send(message);
+
     // Callers pass the stable app session id; the CLI resumes with the
     // provider-native id recorded on the session row.
     const providerSessionId = context.resolveProviderSessionId(sessionId);
@@ -202,7 +209,7 @@ async function spawnOpenCode(command, options = {}, ws, context) {
 
       if (!providerSessionId && !sessionCreatedSent) {
         sessionCreatedSent = true;
-        ws.send(createNormalizedMessage({
+        send(createNormalizedMessage({
           kind: 'session_created',
           newSessionId: capturedSessionId,
           sessionId: capturedSessionId,
@@ -220,7 +227,7 @@ async function spawnOpenCode(command, options = {}, ws, context) {
       try {
         response = JSON.parse(line);
       } catch {
-        ws.send(createNormalizedMessage({
+        send(createNormalizedMessage({
           kind: 'stream_delta',
           content: line,
           sessionId: capturedSessionId || sessionId || null,
@@ -233,12 +240,12 @@ async function spawnOpenCode(command, options = {}, ws, context) {
         registerSession(readOpenCodeSessionId(response));
         const normalized = context.normalizeMessage(response, capturedSessionId || sessionId || null);
         for (const msg of normalized) {
-          ws.send(msg);
+          send(msg);
         }
       } catch (error) {
         const errorContent = error instanceof Error ? error.message : String(error);
         console.error('[OpenCode] Failed to process JSON output:', errorContent);
-        ws.send(createNormalizedMessage({
+        send(createNormalizedMessage({
           kind: 'error',
           content: errorContent,
           sessionId: capturedSessionId || sessionId || null,
@@ -313,7 +320,7 @@ async function spawnOpenCode(command, options = {}, ws, context) {
           return;
         }
 
-        ws.send(createNormalizedMessage({
+        send(createNormalizedMessage({
           kind: 'error',
           content: stderrText,
           sessionId: capturedSessionId || sessionId || null,
@@ -334,7 +341,7 @@ async function spawnOpenCode(command, options = {}, ws, context) {
         // OpenCode's own database is keyed by the provider-native id.
         const tokenBudget = readOpenCodeTokenUsage(capturedSessionId);
         if (tokenBudget) {
-          ws.send(createNormalizedMessage({
+          send(createNormalizedMessage({
             kind: 'status',
             text: 'token_budget',
             tokenBudget,
@@ -347,11 +354,12 @@ async function spawnOpenCode(command, options = {}, ws, context) {
         // already sent the aborted complete on this run's behalf).
         if (!completeSent && !opencodeProcess.aborted) {
           completeSent = true;
-          ws.send(createCompleteMessage({ provider: 'opencode', sessionId: finalSessionId, exitCode: code }));
+          send(createCompleteMessage({ provider: 'opencode', sessionId: finalSessionId, exitCode: code }));
         }
 
         if (code === 0) {
           notifyTerminalState({ code });
+          deltaBatcher.dispose();
           resolve();
           return;
         }
@@ -359,7 +367,7 @@ async function spawnOpenCode(command, options = {}, ws, context) {
         if (code === 127 || code === null) {
           const installed = await context.isProviderInstalled();
           if (!installed) {
-            ws.send(createNormalizedMessage({
+            send(createNormalizedMessage({
               kind: 'error',
               content: 'OpenCode CLI is not installed. Install it from https://opencode.ai/docs/',
               sessionId: finalSessionId,
@@ -369,6 +377,7 @@ async function spawnOpenCode(command, options = {}, ws, context) {
         }
 
         notifyTerminalState({ code });
+        deltaBatcher.dispose();
         reject(new Error(code === null ? 'OpenCode CLI process was terminated' : `OpenCode CLI exited with code ${code}`));
       });
 
@@ -382,7 +391,7 @@ async function spawnOpenCode(command, options = {}, ws, context) {
           ? 'OpenCode CLI is not installed. Install it from https://opencode.ai/docs/'
           : error.message;
 
-        ws.send(createNormalizedMessage({
+        send(createNormalizedMessage({
           kind: 'error',
           content: errorContent,
           sessionId: finalSessionId,
@@ -390,12 +399,18 @@ async function spawnOpenCode(command, options = {}, ws, context) {
         }));
         if (!completeSent && !opencodeProcess.aborted) {
           completeSent = true;
-          ws.send(createCompleteMessage({ provider: 'opencode', sessionId: finalSessionId, exitCode: 1 }));
+          send(createCompleteMessage({ provider: 'opencode', sessionId: finalSessionId, exitCode: 1 }));
         }
         notifyTerminalState({ error });
+        // Drop any delta still buffered at teardown; a normal run already
+        // flushed everything through its terminal `complete`.
+        deltaBatcher.dispose();
         reject(error);
       });
-    }).catch(reject);
+    }).catch((error) => {
+      deltaBatcher.dispose();
+      reject(error);
+    });
   });
 }
 

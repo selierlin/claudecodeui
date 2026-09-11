@@ -6,7 +6,7 @@ import {
   normalizeAttachmentDescriptors
 } from '@/shared/image-attachments.js';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
-import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell } from '@/shared/utils.js';
+import { createCompleteMessage, createDeltaBatcher, createNormalizedMessage, flattenPromptForWindowsShell } from '@/shared/utils.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
@@ -48,6 +48,14 @@ async function spawnCursor(command, options = {}, ws, context) {
       images,
       files
     } = options;
+
+    // Cursor streams assistant prose as token-rate `stream_delta` frames;
+    // coalesce them the same way the Claude runtime does so a long reply
+    // cannot overrun this run's replay buffer. `send` is the only outbound
+    // path below.
+    const deltaBatcher = createDeltaBatcher((message) => ws.send(message));
+    const send = (message) => deltaBatcher.send(message);
+
     let capturedSessionId = providerSessionId; // Track the provider-native session id throughout the process
     let sessionCreatedSent = false; // Track if we've already sent session-created event
     let hasRetriedWithTrust = false;
@@ -114,6 +122,10 @@ async function spawnCursor(command, options = {}, ws, context) {
         return;
       }
       settled = true;
+      // Drop any delta still buffered at teardown. A normal run has already
+      // flushed everything through its terminal `complete`; this only discards
+      // frames left behind by an abort or a superseding run.
+      deltaBatcher.dispose();
       callback();
     };
 
@@ -207,7 +219,7 @@ async function spawnCursor(command, options = {}, ws, context) {
                   // Send session-created event only once for sessions with nothing to resume
                   if (!providerSessionId && !sessionCreatedSent) {
                     sessionCreatedSent = true;
-                    ws.send(createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, model: response.model, cwd: response.cwd, sessionId: capturedSessionId, provider: 'cursor' }));
+                    send(createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, model: response.model, cwd: response.cwd, sessionId: capturedSessionId, provider: 'cursor' }));
                   }
                 }
 
@@ -223,7 +235,7 @@ async function spawnCursor(command, options = {}, ws, context) {
               // Accumulate assistant message chunks
               if (response.message && response.message.content && response.message.content.length > 0) {
                 const normalized = context.normalizeMessage(response, capturedSessionId || sessionId || null);
-                for (const msg of normalized) ws.send(msg);
+                for (const msg of normalized) send(msg);
               }
               break;
 
@@ -231,7 +243,7 @@ async function spawnCursor(command, options = {}, ws, context) {
               // Session complete — terminal lifecycle event for this run
               if (!completeSent) {
                 completeSent = true;
-                ws.send(createCompleteMessage({
+                send(createCompleteMessage({
                   provider: 'cursor',
                   sessionId: capturedSessionId || sessionId || null,
                   exitCode: response.subtype === 'success' ? 0 : 1,
@@ -250,7 +262,7 @@ async function spawnCursor(command, options = {}, ws, context) {
 
           // If not JSON, send as stream delta via adapter
           const normalized = context.normalizeMessage(line, capturedSessionId || sessionId || null);
-          for (const msg of normalized) ws.send(msg);
+          for (const msg of normalized) send(msg);
         }
       };
 
@@ -277,7 +289,7 @@ async function spawnCursor(command, options = {}, ws, context) {
           return;
         }
 
-        ws.send(createNormalizedMessage({ kind: 'error', content: stderrText, sessionId: capturedSessionId || sessionId || null, provider: 'cursor' }));
+        send(createNormalizedMessage({ kind: 'error', content: stderrText, sessionId: capturedSessionId || sessionId || null, provider: 'cursor' }));
       });
 
       // Handle process completion
@@ -308,7 +320,7 @@ async function spawnCursor(command, options = {}, ws, context) {
         // run was aborted (abort-session sent the aborted complete).
         if (!completeSent && !cursorProcess.aborted) {
           completeSent = true;
-          ws.send(createCompleteMessage({ provider: 'cursor', sessionId: finalSessionId, exitCode: code }));
+          send(createCompleteMessage({ provider: 'cursor', sessionId: finalSessionId, exitCode: code }));
         }
 
         if (code === 0) {
@@ -334,10 +346,10 @@ async function spawnCursor(command, options = {}, ws, context) {
           ? 'Cursor CLI is not installed. Please install it from https://cursor.com'
           : error.message;
 
-        ws.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: capturedSessionId || sessionId || null, provider: 'cursor' }));
+        send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: capturedSessionId || sessionId || null, provider: 'cursor' }));
         if (!completeSent && !cursorProcess.aborted) {
           completeSent = true;
-          ws.send(createCompleteMessage({ provider: 'cursor', sessionId: capturedSessionId || sessionId || null, exitCode: 1 }));
+          send(createCompleteMessage({ provider: 'cursor', sessionId: capturedSessionId || sessionId || null, exitCode: 1 }));
         }
         notifyTerminalState({ error });
 

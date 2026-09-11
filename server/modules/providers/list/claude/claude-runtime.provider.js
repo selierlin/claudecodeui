@@ -36,7 +36,7 @@ import {
   notifyRunStopped,
   notifyUserIfEnabled
 } from '@/modules/notifications/index.js';
-import { createCompleteMessage, createNormalizedMessage } from '@/shared/utils.js';
+import { createCompleteMessage, createDeltaBatcher, createNormalizedMessage } from '@/shared/utils.js';
 
 const activeSessions = new Map();
 const pendingToolApprovals = new Map();
@@ -450,115 +450,6 @@ export function isSubagentPromptEcho(message) {
 export function isSubagentPartialEvent(message) {
   return Boolean(message?.parentToolUseId)
     && (message.kind === 'stream_delta' || message.kind === 'stream_end');
-}
-
-/** Longest a buffered delta waits before it is flushed to the client. */
-const DELTA_COALESCE_INTERVAL_MS = 50;
-/** Flush early once this much text is held, so a fast stream stays responsive. */
-const DELTA_COALESCE_MAX_CHARS = 2048;
-
-/**
- * Coalesces a run's consecutive same-channel `stream_delta` frames into
- * periodic sends.
- *
- * The SDK emits one delta per token — 9177 of them in a single measured
- * reasoning pass — and every forwarded frame becomes both a websocket send and
- * an entry in the run's replay buffer (`MAX_BUFFERED_EVENTS_PER_RUN`, 5000). A
- * long reasoning turn therefore truncated its own replay log. Batching on a
- * short window divides both costs by the frame rate while adding at most
- * `intervalMs` of latency, which the client's own 100ms render coalescing
- * already hides.
- *
- * Ordering is preserved by flushing before anything that is not a delta: a
- * delta must never land after the `stream_end` / full `thinking` / `complete`
- * that follows it. A change of session, provider or channel flushes too, so two
- * channels cannot merge into one frame.
- *
- * `dispose` deliberately discards rather than flushes: by the time a run tears
- * down, either its terminal event has already flushed everything (normal and
- * error paths send through the batcher), or the terminal event belongs to
- * someone else — an abort or a superseding run — and a late flushed delta
- * would only resurrect a row the client has already finalized.
- *
- * The first delta of a batch is kept as `base`, so the flushed frame carries
- * the same id/timestamp/provider the adapter assigned rather than a
- * reconstructed shape.
- *
- * @param {(message: *) => void} send - Sink for a flushed frame
- * @param {Object} [options]
- * @param {number} [options.intervalMs] - Longest a delta waits before flushing
- * @param {number} [options.maxChars] - Flush early once this much text is held
- * @returns {{ send: (message: *) => void, flush: () => void, dispose: () => void }}
- */
-export function createDeltaBatcher(send, {
-  intervalMs = DELTA_COALESCE_INTERVAL_MS,
-  maxChars = DELTA_COALESCE_MAX_CHARS
-} = {}) {
-  let pending = null;
-  let timer = null;
-
-  const clearTimer = () => {
-    if (timer !== null) {
-      clearTimeout(timer);
-      timer = null;
-    }
-  };
-
-  const flush = () => {
-    clearTimer();
-    if (!pending) {
-      return;
-    }
-    const { base, text } = pending;
-    pending = null;
-    send({ ...base, content: text, streamChannel: base.streamChannel });
-  };
-
-  const sendOrBuffer = (message) => {
-    if (message?.kind !== 'stream_delta') {
-      flush();
-      send(message);
-      return;
-    }
-
-    const text = message.content || '';
-    if (!text) {
-      return;
-    }
-
-    if (
-      !pending
-      || pending.base.sessionId !== message.sessionId
-      || pending.base.provider !== message.provider
-      || pending.base.streamChannel !== message.streamChannel
-    ) {
-      flush();
-      pending = { base: message, text };
-    } else {
-      pending.text += text;
-    }
-
-    if (pending.text.length >= maxChars) {
-      flush();
-      return;
-    }
-
-    if (timer === null) {
-      timer = setTimeout(() => {
-        timer = null;
-        flush();
-      }, intervalMs);
-      // Never let a pending flush keep the process alive on its own.
-      timer.unref?.();
-    }
-  };
-
-  const dispose = () => {
-    clearTimer();
-    pending = null;
-  };
-
-  return { send: sendOrBuffer, flush, dispose };
 }
 
 function readNumber(value) {

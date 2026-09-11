@@ -393,6 +393,126 @@ export function createCompleteMessage(opts: {
 }
 
 // ---------------------------
+//----------------- STREAM DELTA COALESCING ------------
+/** Longest a buffered delta waits before it is flushed to the client. */
+const DELTA_COALESCE_INTERVAL_MS = 50;
+/** Flush early once this much text is held, so a fast stream stays responsive. */
+const DELTA_COALESCE_MAX_CHARS = 2048;
+
+/** Handle returned by {@link createDeltaBatcher}. */
+export type DeltaBatcher = {
+  /** Buffers a `stream_delta`, or forwards any other frame after flushing. */
+  send(message: NormalizedMessage): void;
+  /** Emits the pending batch immediately, if any. */
+  flush(): void;
+  /** Drops the pending batch without emitting it. */
+  dispose(): void;
+};
+
+/**
+ * Coalesces a provider run's consecutive same-channel `stream_delta` frames
+ * into periodic sends.
+ *
+ * Used by the Claude, Cursor and OpenCode runtimes. The Claude SDK emits one
+ * delta per token — 9177 of them in a single measured reasoning pass — and
+ * every forwarded frame becomes both a websocket send and an entry in the
+ * run's replay buffer (`MAX_BUFFERED_EVENTS_PER_RUN`, 5000). A long reasoning
+ * turn therefore truncated its own replay log. Batching on a short window
+ * divides both costs by the frame rate while adding at most `intervalMs` of
+ * latency, which the client's own render coalescing already hides. Cursor and
+ * OpenCode emit deltas at a lower rate, but the same ceiling applies to them.
+ *
+ * Ordering is preserved by flushing before anything that is not a delta: a
+ * delta must never land after the `stream_end` / full `thinking` / `complete`
+ * that follows it. A change of session, provider or channel flushes too, so two
+ * channels cannot merge into one frame.
+ *
+ * `dispose` deliberately discards rather than flushes: by the time a run tears
+ * down, either its terminal event has already flushed everything (normal and
+ * error paths send through the batcher), or the terminal event belongs to
+ * someone else — an abort or a superseding run — and a late flushed delta
+ * would only resurrect a row the client has already finalized. A disposed
+ * batcher stays usable, so a runtime that retries a run can keep sending.
+ *
+ * The first delta of a batch is kept as `base`, so the flushed frame carries
+ * the same id/timestamp/provider the adapter assigned rather than a
+ * reconstructed shape.
+ */
+export function createDeltaBatcher(
+  send: (message: NormalizedMessage) => void,
+  {
+    intervalMs = DELTA_COALESCE_INTERVAL_MS,
+    maxChars = DELTA_COALESCE_MAX_CHARS,
+  }: { intervalMs?: number; maxChars?: number } = {},
+): DeltaBatcher {
+  let pending: { base: NormalizedMessage; text: string } | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const clearTimer = () => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+
+  const flush = () => {
+    clearTimer();
+    if (!pending) {
+      return;
+    }
+    const { base, text } = pending;
+    pending = null;
+    send({ ...base, content: text, streamChannel: base.streamChannel });
+  };
+
+  const sendOrBuffer = (message: NormalizedMessage) => {
+    if (message.kind !== 'stream_delta') {
+      flush();
+      send(message);
+      return;
+    }
+
+    const text = message.content || '';
+    if (!text) {
+      return;
+    }
+
+    if (
+      !pending
+      || pending.base.sessionId !== message.sessionId
+      || pending.base.provider !== message.provider
+      || pending.base.streamChannel !== message.streamChannel
+    ) {
+      flush();
+      pending = { base: message, text };
+    } else {
+      pending.text += text;
+    }
+
+    if (pending.text.length >= maxChars) {
+      flush();
+      return;
+    }
+
+    if (timer === null) {
+      timer = setTimeout(() => {
+        timer = null;
+        flush();
+      }, intervalMs);
+      // Never let a pending flush keep the process alive on its own.
+      timer.unref?.();
+    }
+  };
+
+  const dispose = () => {
+    clearTimer();
+    pending = null;
+  };
+
+  return { send: sendOrBuffer, flush, dispose };
+}
+
+// ---------------------------
 //----------------- SUBAGENT TIMELINE UTILITIES ------------
 /**
  * Longest tool output kept on one subagent activity.
