@@ -784,6 +784,22 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
   // Set once a turn publishes a budget read from an assistant message, so the
   // turn-ending `result` is only mined for usage when nothing better arrived.
   let assistantBudgetSent = false;
+  // Opt-in stream diagnostics (`CLAUDE_STREAM_DEBUG=1`). Counts what the SDK
+  // emits and what we forward, per run, so the delta volume can be measured
+  // against the replay-buffer ceiling and the thinking/text split can be seen
+  // without a debugger. Off by default; one summary line per run when on.
+  const streamStats = process.env.CLAUDE_STREAM_DEBUG === '1'
+    ? {
+      sdkTypes: {},
+      kinds: {},
+      textDeltas: 0,
+      thinkingDeltas: 0,
+      subagentDrops: 0,
+      maxGapMs: 0,
+      firstDeltaAt: null,
+      lastDeltaAt: null
+    }
+    : null;
 
   // A new turn supersedes any earlier one still holding this session's process
   // open, so held runs cannot stack up across a conversation.
@@ -1032,6 +1048,26 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         // session_id already captured
       }
 
+      if (streamStats) {
+        const sdkType = typeof message.type === 'string' ? message.type : 'unknown';
+        streamStats.sdkTypes[sdkType] = (streamStats.sdkTypes[sdkType] || 0) + 1;
+        if (sdkType === 'stream_event' && message.event?.type === 'content_block_delta') {
+          const deltaType = message.event.delta?.type;
+          if (deltaType === 'thinking_delta') {
+            streamStats.thinkingDeltas += 1;
+          } else if (deltaType === 'text_delta') {
+            streamStats.textDeltas += 1;
+          }
+          const now = Date.now();
+          if (streamStats.lastDeltaAt === null) {
+            streamStats.firstDeltaAt = now;
+          } else {
+            streamStats.maxGapMs = Math.max(streamStats.maxGapMs, now - streamStats.lastDeltaAt);
+          }
+          streamStats.lastDeltaAt = now;
+        }
+      }
+
       // Transform and normalize message via adapter
       const transformedMessage = transformMessage(message);
       const sid = capturedSessionId || sessionId || null;
@@ -1039,6 +1075,9 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       // Use adapter to normalize SDK events into NormalizedMessage[]
       const normalized = context.normalizeMessage(transformedMessage, sid);
       for (const msg of normalized) {
+        if (streamStats) {
+          streamStats.kinds[msg.kind] = (streamStats.kinds[msg.kind] || 0) + 1;
+        }
         // Preserve parentToolUseId from SDK wrapper for subagent tool grouping
         if (transformedMessage.parentToolUseId && !msg.parentToolUseId) {
           msg.parentToolUseId = transformedMessage.parentToolUseId;
@@ -1048,6 +1087,9 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         }
         // Subagent partial frames must stay out of the main thread (§2.3).
         if (isSubagentPartialEvent(msg)) {
+          if (streamStats) {
+            streamStats.subagentDrops += 1;
+          }
           continue;
         }
         ws.send(msg);
@@ -1070,6 +1112,21 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       }
 
       if (message.type === 'result') {
+        if (streamStats) {
+          const deltaSpanMs = streamStats.firstDeltaAt !== null && streamStats.lastDeltaAt !== null
+            ? streamStats.lastDeltaAt - streamStats.firstDeltaAt
+            : 0;
+          console.log('[claude-stream-debug]', JSON.stringify({
+            sessionId: capturedSessionId || sessionId || null,
+            textDeltas: streamStats.textDeltas,
+            thinkingDeltas: streamStats.thinkingDeltas,
+            subagentDrops: streamStats.subagentDrops,
+            maxGapMs: streamStats.maxGapMs,
+            deltaSpanMs,
+            kinds: streamStats.kinds,
+            sdkTypes: streamStats.sdkTypes
+          }));
+        }
         // The turn is done as far as the client is concerned.
         const abortPending = sessionKey() ? abortedSessionIds.has(sessionKey()) : false;
         if (!turnCompleteSent && !abortPending) {
