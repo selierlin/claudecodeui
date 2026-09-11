@@ -560,6 +560,35 @@ test('Codex memory citations are lifted out of the reply they trail', () => {
   ]);
 });
 
+test('Codex live reasoning normalizes to a thinking row, not reply prose', () => {
+  const provider = new CodexSessionsProvider();
+  const result = provider.normalizeMessage({
+    type: 'item',
+    itemType: 'reasoning',
+    itemId: 'reasoning-live-1',
+    message: { role: 'assistant', content: 'User asks in Chinese...', isReasoning: true },
+  }, 'app-session');
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].kind, 'thinking');
+  assert.equal(result[0].content, 'User asks in Chinese...');
+});
+
+test('Codex live agent_message normalizes to reply prose', () => {
+  const provider = new CodexSessionsProvider();
+  const result = provider.normalizeMessage({
+    type: 'item',
+    itemType: 'agent_message',
+    itemId: 'agent-live-1',
+    message: { role: 'assistant', content: '亮，这是给你的一篇短篇小说' },
+  }, 'app-session');
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].kind, 'text');
+  assert.equal(result[0].role, 'assistant');
+  assert.equal(result[0].content, '亮，这是给你的一篇短篇小说');
+});
+
 test('a plan followed by a memory citation is still recognized as a plan', async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-plan-citation-'));
   const workspacePath = path.join(tempRoot, 'workspace');

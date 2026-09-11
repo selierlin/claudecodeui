@@ -2131,7 +2131,7 @@ export class CodexSessionsProvider implements IProviderSessions {
       })];
     }
 
-    if (raw.type === 'thinking' || raw.isReasoning) {
+    if (raw.type === 'thinking' || raw.isReasoning || raw.message?.isReasoning) {
       const thinkingContent = typeof raw.message?.content === 'string' ? raw.message.content : '';
       if (!thinkingContent.trim()) {
         return [];
