@@ -26,6 +26,7 @@ type Captured = {
   role?: string;
   provider?: string;
   content?: unknown;
+  streamChannel?: string;
   toolName?: string;
   toolId?: string;
   newSessionId?: string;
@@ -89,6 +90,7 @@ function makeWriter(captured: Captured[]): ProviderRuntimeWriter {
         role: message.role,
         provider: message.provider,
         content: message.content,
+        streamChannel: message.streamChannel,
         toolName: message.toolName,
         toolId: message.toolId,
         newSessionId: message.newSessionId,
@@ -902,4 +904,104 @@ test('workbuddy normalizeMessage maps top-level reasoning events to thinking mes
     provider.normalizeMessage({ type: 'reasoning', rawContent: [{ type: 'other', text: 'ignored' }] }, 's'),
     [],
   );
+});
+
+test('workbuddy normalizeMessage maps streamed deltas and message_stop', () => {
+  const provider = new WorkbuddySessionsProvider();
+
+  const thinking = provider.normalizeMessage({
+    type: 'content_block_delta',
+    delta: { type: 'thinking_delta', thinking: 'a thought' },
+  }, 'app-session');
+  assert.equal(thinking[0]?.kind, 'stream_delta');
+  assert.equal(thinking[0]?.streamChannel, 'thinking');
+  assert.equal(thinking[0]?.content, 'a thought');
+  assert.equal(thinking[0]?.provider, 'workbuddy');
+
+  const text = provider.normalizeMessage({
+    type: 'content_block_delta',
+    delta: { type: 'text_delta', text: 'hi' },
+  }, 'app-session');
+  assert.equal(text[0]?.kind, 'stream_delta');
+  assert.equal(text[0]?.streamChannel, 'text');
+  assert.equal(text[0]?.content, 'hi');
+
+  const stop = provider.normalizeMessage({ type: 'message_stop' }, 'app-session');
+  assert.equal(stop[0]?.kind, 'stream_end');
+
+  // Non-delta content-block frames and empty deltas produce nothing.
+  assert.deepEqual(provider.normalizeMessage({ type: 'content_block_start', index: 0 }, 's'), []);
+  assert.deepEqual(provider.normalizeMessage({ type: 'content_block_delta', delta: { type: 'text_delta', text: '' } }, 's'), []);
+});
+
+test('workbuddy streams thinking/reply deltas and suppresses the full-message copy', async () => {
+  process.env.CODEBUDDY_COMMAND = MOCK_CLI;
+  process.env.MOCK_MODE = 'streaming';
+  const captured: Captured[] = [];
+
+  await workbuddyRuntime.run(
+    'hello',
+    { sessionId: 'wb-streaming', cwd: '/tmp' },
+    makeWriter(captured),
+    makeContext(new Map()),
+  );
+
+  const deltas = captured.filter((entry) => entry.kind === 'stream_delta');
+  const reply = deltas.filter((entry) => entry.streamChannel !== 'thinking').map((entry) => entry.content).join('');
+  const thinking = deltas.filter((entry) => entry.streamChannel === 'thinking').map((entry) => entry.content).join('');
+  assert.equal(reply, 'OK:hello:perm=none');
+  assert.equal(thinking, 'mock thinking');
+
+  const streamEndIndex = captured.findIndex((entry) => entry.kind === 'stream_end');
+  assert.notEqual(streamEndIndex, -1, 'expected a stream_end to finalize the placeholder rows');
+  const lastDeltaIndex = captured.map((entry) => entry.kind).lastIndexOf('stream_delta');
+  assert.ok(lastDeltaIndex < streamEndIndex, 'every delta must precede stream_end');
+
+  // The full assistant events that follow `message_stop` must not re-emit the
+  // blocks that streamed.
+  const duplicated = captured
+    .slice(streamEndIndex + 1)
+    .filter((entry) => entry.kind === 'text' || entry.kind === 'thinking');
+  assert.deepEqual(duplicated, [], `unexpected duplicated content: ${JSON.stringify(duplicated)}`);
+
+  assert.equal(captured.find((entry) => entry.kind === 'complete')?.exitCode, 0);
+});
+
+// The regression depends on SIGTERM reaching the child and letting it emit one
+// last delta, which is POSIX-specific; Windows kill semantics would not.
+test('a workbuddy abort drops a delta that arrives after the terminal complete', { skip: process.platform === 'win32' }, async () => {
+  process.env.CODEBUDDY_COMMAND = MOCK_CLI;
+  process.env.MOCK_MODE = 'streaming-hang';
+  const captured: Captured[] = [];
+
+  const runPromise = workbuddyRuntime.run(
+    'hang and stream',
+    { sessionId: 'wb-abort-stream', cwd: '/tmp' },
+    makeWriter(captured),
+    makeContext(new Map()),
+  );
+
+  const deadline = Date.now() + 5000;
+  while (!captured.some((entry) => entry.kind === 'stream_delta')) {
+    if (Date.now() > deadline) {
+      assert.fail('timed out waiting for the mock CLI to stream');
+    }
+    await sleep(20);
+  }
+
+  assert.equal(await workbuddyRuntime.abort('wb-abort-stream'), true);
+  // `handleChatAbort` emits the terminal complete directly on the writer,
+  // bypassing the runtime's coalescer — reproduce that here.
+  captured.push({ kind: 'complete', provider: 'workbuddy', aborted: true });
+
+  await runPromise;
+  // Outlast both the coalescer window (50ms) and the mock's 300ms linger.
+  await sleep(400);
+
+  const completeIndex = captured.findIndex((entry) => entry.kind === 'complete');
+  assert.notEqual(completeIndex, -1);
+  const lateDeltas = captured
+    .slice(completeIndex + 1)
+    .filter((entry) => entry.kind === 'stream_delta');
+  assert.deepEqual(lateDeltas, [], `unexpected delta after complete: ${JSON.stringify(lateDeltas)}`);
 });

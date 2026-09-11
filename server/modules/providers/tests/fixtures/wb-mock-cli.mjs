@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Mock of the WorkBuddy (codebuddy) stream-json CLI for runtime tests.
-// Behavior is selected by MOCK_MODE: success | error | error-event |
+// Behavior is selected by MOCK_MODE: success | streaming | error | error-event |
 // function-events | task-events | task-failure | unknown-invalid |
 // exit-nonzero | stderr-sensitive | error-sensitive | no-trailing-newline |
-// hang | interruptible | stdin-closed | error-event-hang |
+// hang | streaming-hang | interruptible | stdin-closed | error-event-hang |
 // success-result-hang | error-result-hang | result-then-error-hang |
 // assistant-complete-await-eof.
 const mode = process.env.MOCK_MODE || 'success';
@@ -335,6 +335,40 @@ if (mode === 'hang') {
     session_id: sid,
     result: 'ok',
   }));
+} else if (mode === 'streaming') {
+  // Mirrors the real partial-message wire: token-level `stream_event` deltas,
+  // then the full assistant events that repeat the same blocks.
+  const thinkingText = 'mock thinking';
+  const replyText = `OK:${effectivePrompt}:perm=${permMode ?? 'none'}`;
+  const splitAt = Math.ceil(replyText.length / 2);
+  emit({ type: 'stream_event', event: { type: 'message_start', message: { role: 'assistant' } } });
+  emit({ type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } } });
+  emit({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: thinkingText } } });
+  emit({ type: 'stream_event', event: { type: 'content_block_stop', index: 0 } });
+  emit({ type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'text' } } });
+  emit({ type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: replyText.slice(0, splitAt) } } });
+  emit({ type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: replyText.slice(splitAt) } } });
+  emit({ type: 'stream_event', event: { type: 'content_block_stop', index: 1 } });
+  emit({ type: 'stream_event', event: { type: 'message_stop' } });
+  emit({ type: 'assistant', session_id: sid, message: { role: 'assistant', content: [{ type: 'thinking', thinking: thinkingText }] } });
+  emit({ type: 'assistant', session_id: sid, message: { role: 'assistant', content: [{ type: 'text', text: replyText }] } });
+  emit({ type: 'result', subtype: 'success', is_error: false, session_id: sid, result: 'ok' });
+} else if (mode === 'streaming-hang') {
+  // Streams deltas indefinitely so a test can abort mid-stream and verify a
+  // buffered/final delta cannot land after the terminal complete.
+  emit({ type: 'stream_event', event: { type: 'message_start', message: { role: 'assistant' } } });
+  emit({ type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'text' } } });
+  const emitDelta = () => emit({
+    type: 'stream_event',
+    event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'x' } },
+  });
+  const timer = setInterval(emitDelta, 30);
+  process.on('SIGTERM', () => {
+    clearInterval(timer);
+    emitDelta();
+    setTimeout(() => process.exit(0), 300);
+  });
+  emitDelta();
 } else {
   emit({
     type: 'assistant',
@@ -361,6 +395,7 @@ if (mode === 'hang') {
 // is only necessary for the long-running modes that test cancellation.
 if (
   mode !== 'hang'
+  && mode !== 'streaming-hang'
   && mode !== 'interruptible'
   && mode !== 'stdin-closed'
   && mode !== 'error-event-hang'

@@ -3,8 +3,14 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { notifyRunFailed, notifyRunStopped } from '@/modules/notifications/index.js';
 import { buildWorkbuddyStreamJsonInput } from '@/shared/image-attachments.js';
 import type { IProviderRuntime } from '@/shared/interfaces.js';
-import type { AnyRecord } from '@/shared/types.js';
-import { createCompleteMessage, createNormalizedMessage } from '@/shared/utils.js';
+import type { AnyRecord, NormalizedMessage } from '@/shared/types.js';
+import {
+  createCompleteMessage,
+  createDeltaBatcher,
+  createNormalizedMessage,
+  omitStreamedAssistantBlocks,
+  readObjectRecord,
+} from '@/shared/utils.js';
 
 import { getWorkbuddyCommand } from './workbuddy-auth.provider.js';
 import { resolveWorkbuddyConfigDir } from './workbuddy-storage.provider.js';
@@ -128,7 +134,17 @@ export const workbuddyRuntime: IProviderRuntime = {
       // A stale flag from a superseded run must not mark this run aborted.
       abortedSessionIds.delete(appSessionId);
 
-    const args: string[] = ['-p', '--output-format', 'stream-json', '--input-format', 'stream-json'];
+    // `--include-partial-messages` adds token-level `stream_event` frames
+    // (content_block_delta) so the WebUI can render the reasoning trace and the
+    // reply as they arrive instead of waiting for the whole assistant message.
+    const args: string[] = [
+      '-p',
+      '--output-format',
+      'stream-json',
+      '--input-format',
+      'stream-json',
+      '--include-partial-messages',
+    ];
     if (providerSessionId) {
       args.push('--resume', providerSessionId);
     }
@@ -162,6 +178,38 @@ export const workbuddyRuntime: IProviderRuntime = {
     });
     activeProcesses.set(appSessionId, child);
 
+    // Partial messages arrive as one `stream_delta` per token; coalesce them
+    // like the Claude runtime so a long reasoning pass cannot overrun this
+    // run's replay buffer. `send` is the only outbound path from here on.
+    //
+    // `streamHalted` becomes true once this run must publish nothing further:
+    // its terminal `complete` went out through the batcher, or the user aborted
+    // it (the abort handler emits that complete directly, bypassing this
+    // batcher, so `haltStream` arms the flag). A delta surfacing after that
+    // would resurrect the client's already-finalized placeholder row.
+    let streamHalted = false;
+    const deltaBatcher = createDeltaBatcher((message) => {
+      if (message.kind === 'complete') {
+        streamHalted = true;
+      }
+      if (message.kind === 'stream_delta' && streamHalted) {
+        return;
+      }
+      writer.send(message);
+    });
+    const send = (message: NormalizedMessage) => deltaBatcher.send(message);
+
+    // Which channels the current assistant message already streamed, so the
+    // full assistant events that follow `message_stop` do not repeat them.
+    let streamedText = false;
+    let streamedThinking = false;
+
+    type HaltableChild = ChildProcess & { haltStream?: () => void };
+    (child as HaltableChild).haltStream = () => {
+      streamHalted = true;
+      deltaBatcher.dispose();
+    };
+
     const sessionName = typeof options.sessionSummary === 'string'
       ? options.sessionSummary
       : undefined;
@@ -189,7 +237,7 @@ export const workbuddyRuntime: IProviderRuntime = {
         clearTimeout(forceKillTimer);
       }
       resolveRun();
-      writer.send(createCompleteMessage({
+      send(createCompleteMessage({
         provider: 'workbuddy',
         sessionId: appSessionId,
         actualSessionId: capturedSessionId ?? undefined,
@@ -238,7 +286,7 @@ export const workbuddyRuntime: IProviderRuntime = {
         return;
       }
       pendingFinish = { exitCode: 1, error };
-      writer.send(createNormalizedMessage({
+      send(createNormalizedMessage({
         kind: 'error',
         provider: 'workbuddy',
         sessionId: appSessionId,
@@ -294,7 +342,7 @@ export const workbuddyRuntime: IProviderRuntime = {
         return;
       }
       sessionCreatedSent = true;
-      writer.send(createNormalizedMessage({
+      send(createNormalizedMessage({
         kind: 'session_created',
         newSessionId: capturedSessionId,
         sessionId: appSessionId,
@@ -333,6 +381,35 @@ export const workbuddyRuntime: IProviderRuntime = {
         return;
       }
 
+      if (event.type === 'stream_event') {
+        const inner = readObjectRecord(event.event);
+        if (!inner) {
+          return;
+        }
+        // A new assistant message opens a fresh streaming window; clear the
+        // channels the previous one recorded so its full copy is not falsely
+        // suppressed (or a fresh one missed).
+        if (inner.type === 'message_start') {
+          streamedText = false;
+          streamedThinking = false;
+          return;
+        }
+        // content_block_delta → stream_delta, message_stop → stream_end.
+        // Tracking the channel marks the block as streamed so the full
+        // assistant events that follow `message_stop` do not repeat it.
+        for (const message of context.normalizeMessage(inner, appSessionId)) {
+          if (message.kind === 'stream_delta') {
+            if (message.streamChannel === 'thinking') {
+              streamedThinking = true;
+            } else {
+              streamedText = true;
+            }
+          }
+          send(message);
+        }
+        return;
+      }
+
       if (event.type === 'system' && event.subtype === 'init') {
         if (typeof event.session_id === 'string' && event.session_id) {
           capturedSessionId = event.session_id;
@@ -343,7 +420,7 @@ export const workbuddyRuntime: IProviderRuntime = {
 
       if (event.type === 'system' && typeof event.subtype === 'string' && event.subtype.startsWith('task_')) {
         for (const message of context.normalizeMessage(event, appSessionId)) {
-          writer.send(message);
+          send(message);
         }
         return;
       }
@@ -357,8 +434,24 @@ export const workbuddyRuntime: IProviderRuntime = {
       }
 
       if (event.type === 'assistant') {
+        // The reply/thinking already streamed via `stream_event` deltas; keep
+        // only the blocks that were not streamed (e.g. tool calls) so the full
+        // assistant event does not render the text a second time.
+        const assistantMessage = readObjectRecord(event.message);
+        if (assistantMessage && Array.isArray(assistantMessage.content)) {
+          event = {
+            ...event,
+            message: {
+              ...assistantMessage,
+              content: omitStreamedAssistantBlocks(assistantMessage.content, {
+                text: streamedText,
+                thinking: streamedThinking,
+              }),
+            },
+          };
+        }
         for (const message of context.normalizeMessage(event, appSessionId)) {
-          writer.send(message);
+          send(message);
         }
         return;
       }
@@ -368,14 +461,14 @@ export const workbuddyRuntime: IProviderRuntime = {
         // between tool calls. Surface the text as a thinking message so the UI
         // shows an in-progress indicator instead of stalling on the last tool.
         for (const message of context.normalizeMessage(event, appSessionId)) {
-          writer.send(message);
+          send(message);
         }
         return;
       }
 
       if (event.type === 'function_call' || event.type === 'function_call_result') {
         for (const message of context.normalizeMessage(event, appSessionId)) {
-          writer.send(message);
+          send(message);
         }
         return;
       }
@@ -480,6 +573,10 @@ export const workbuddyRuntime: IProviderRuntime = {
       return false;
     }
     abortedSessionIds.add(sessionId);
+    // The abort handler sends the terminal complete on this run's behalf
+    // (bypassing the coalescer), so halt the stream first: a buffered delta
+    // must not land after that complete and resurrect the client's row.
+    (child as ChildProcess & { haltStream?: () => void }).haltStream?.();
     try {
       if (child.stdin && child.stdin.writable && !child.stdin.destroyed) {
         child.stdin.write(`${JSON.stringify({

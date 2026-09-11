@@ -500,6 +500,45 @@ export class WorkbuddySessionsProvider implements IProviderSessions {
       }
       return messages;
     }
+    // Token-level deltas the runtime unwraps from `stream_event`. Two channels
+    // share the `stream_delta` kind: the visible reply (`text_delta`) and the
+    // reasoning trace (`thinking_delta`). The channel travels with the frame so
+    // the client buffers them into separate rows.
+    if (event?.type === 'content_block_delta') {
+      const deltaRecord = readObjectRecord(event.delta);
+      const deltaType = typeof deltaRecord?.type === 'string' ? deltaRecord.type : '';
+      if (deltaType === 'thinking_delta' && typeof deltaRecord?.thinking === 'string' && deltaRecord.thinking) {
+        return [createNormalizedMessage({
+          kind: 'stream_delta',
+          streamChannel: 'thinking',
+          content: deltaRecord.thinking,
+          sessionId,
+          provider: 'workbuddy',
+          timestamp: readEventTimestamp(event),
+        })];
+      }
+      if (deltaType === 'text_delta' && typeof deltaRecord?.text === 'string' && deltaRecord.text) {
+        return [createNormalizedMessage({
+          kind: 'stream_delta',
+          streamChannel: 'text',
+          content: deltaRecord.text,
+          sessionId,
+          provider: 'workbuddy',
+          timestamp: readEventTimestamp(event),
+        })];
+      }
+      return [];
+    }
+    // `message_stop` closes one assistant message's streamed deltas; the
+    // client finalizes its placeholder rows on this frame.
+    if (event?.type === 'message_stop') {
+      return [createNormalizedMessage({
+        kind: 'stream_end',
+        sessionId,
+        provider: 'workbuddy',
+        timestamp: readEventTimestamp(event),
+      })];
+    }
     if (event?.type !== 'assistant' && event?.type !== 'user') {
       if (event?.type === 'function_call' && typeof event.name === 'string' && event.name.trim()) {
         const toolId = typeof event.callId === 'string' ? event.callId : typeof event.id === 'string' ? event.id : undefined;
