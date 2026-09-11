@@ -5,6 +5,7 @@ import type { ServerEvent,MarkSessionIdle,MarkSessionProcessing,PendingPermissio
 import { showCompletionTitleIndicator } from '@/modules/chat/utils/pageTitleNotification';
 import { playChatCompletionSound, playNotificationSound } from '@/shared/utils';
 import type { SessionStore } from '@/modules/chat/hooks/useSessionStore';
+import type { StreamingBufferRegistry } from '@/modules/chat/utils/streamingBufferRegistry';
 
 const isActionablePermissionRequest = (request: { toolName?: unknown } | null | undefined): boolean => {
   return request?.toolName !== 'ExitPlanMode' && request?.toolName !== 'exit_plan_mode';
@@ -17,14 +18,23 @@ const hasActionablePermissionRequests = (requests: Array<{ toolName?: unknown }>
 type UseChatRealtimeHandlersArgs = {
   isActive: boolean;
   subscribe: (listener: (event: ServerEvent) => void) => () => void;
+  /**
+   * The viewed session's provider. Still used to stamp locally-synthesized
+   * frames (e.g. `protocol_error`) — streaming deltas take their provider from
+   * the frame itself, never from here.
+   */
   provider: LLMProvider;
   selectedSession: ProjectSession | null;
   currentSessionId: string | null;
   setTokenBudget: (budget: Record<string, unknown> | null) => void;
   pendingPermissionRequests: PendingPermissionRequest[];
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
-  streamTimerRef: MutableRefObject<number | null>;
-  accumulatedStreamRef: MutableRefObject<string>;
+  /**
+   * Session-keyed streaming buffer. Replaces the old pair of pane-wide refs, so
+   * each session's deltas are coalesced into their own row and a background
+   * session no longer writes into the viewed session's placeholder.
+   */
+  streamBuffers: StreamingBufferRegistry;
   /**
    * Highest live `seq` observed per session. Essential for reconnect catch-up:
    * `chat.subscribe` sends this value as `lastSeq` so the server replays only
@@ -63,8 +73,7 @@ export function useChatRealtimeHandlers({
   setTokenBudget,
   pendingPermissionRequests,
   setPendingPermissionRequests,
-  streamTimerRef,
-  accumulatedStreamRef,
+  streamBuffers,
   lastSeqRef,
   statusCheckSentAtRef,
   onSessionProcessing,
@@ -185,38 +194,21 @@ export function useChatRealtimeHandlers({
       /*  Provider NormalizedMessage handling                            */
       /* -------------------------------------------------------------- */
 
-      // --- Streaming: buffer for performance ---
+      // --- Streaming: buffered per session ---
+      // The provider travels with the frame; a background session running a
+      // different provider must not be stamped with the viewed session's.
       if (msg.kind === 'stream_delta') {
         const text = (msg.content as string) || '';
-        if (!text) return;
-        accumulatedStreamRef.current += text;
-        if (!streamTimerRef.current) {
-          streamTimerRef.current = window.setTimeout(() => {
-            streamTimerRef.current = null;
-            if (sid) {
-              sessionStore.updateStreaming(sid, accumulatedStreamRef.current, provider);
-            }
-          }, 100);
-        }
-        // Also route to store for non-active sessions
-        if (sid && sid !== activeViewSessionId) {
-          sessionStore.appendRealtime(sid, msg as unknown as NormalizedMessage);
-        }
+        if (!sid || !text) return;
+        streamBuffers.append(sid, text, msg.provider as LLMProvider);
         return;
       }
 
       if (msg.kind === 'stream_end') {
-        if (streamTimerRef.current) {
-          clearTimeout(streamTimerRef.current);
-          streamTimerRef.current = null;
-        }
-        if (sid) {
-          if (accumulatedStreamRef.current) {
-            sessionStore.updateStreaming(sid, accumulatedStreamRef.current, provider);
-          }
-          sessionStore.finalizeStreaming(sid);
-        }
-        accumulatedStreamRef.current = '';
+        if (!sid) return;
+        streamBuffers.flushNow(sid);
+        sessionStore.finalizeStreaming(sid);
+        streamBuffers.drop(sid);
         return;
       }
 
@@ -235,16 +227,15 @@ export function useChatRealtimeHandlers({
       // --- UI side effects for specific kinds ---
       switch (msg.kind) {
         case 'complete': {
-          // Flush any remaining streaming state
-          if (streamTimerRef.current) {
-            clearTimeout(streamTimerRef.current);
-            streamTimerRef.current = null;
-          }
-          if (sid && accumulatedStreamRef.current) {
-            sessionStore.updateStreaming(sid, accumulatedStreamRef.current, provider);
+          // Flush and finalize only when this session still holds a buffer.
+          // Cursor never emits `stream_end`, so this is its only teardown path;
+          // Claude/OpenCode already dropped theirs on `stream_end`, leaving
+          // `has` false so nothing is finalized twice.
+          if (sid && streamBuffers.has(sid)) {
+            streamBuffers.flushNow(sid);
             sessionStore.finalizeStreaming(sid);
+            streamBuffers.drop(sid);
           }
-          accumulatedStreamRef.current = '';
 
           // `complete` is the unified terminal event — every provider run ends
           // with exactly one, regardless of success, failure, or abort. The
@@ -358,8 +349,7 @@ export function useChatRealtimeHandlers({
     setTokenBudget,
     pendingPermissionRequests,
     setPendingPermissionRequests,
-    streamTimerRef,
-    accumulatedStreamRef,
+    streamBuffers,
     lastSeqRef,
     statusCheckSentAtRef,
     onSessionProcessing,

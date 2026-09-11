@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowDownIcon } from 'lucide-react';
 
@@ -19,6 +19,8 @@ import { useChatSessionState } from '@/modules/chat/hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '@/modules/chat/hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '@/modules/chat/hooks/useChatComposerState';
 import { useSessionStore } from '@/modules/chat/hooks/useSessionStore';
+import { createStreamingBufferRegistry } from '@/modules/chat/utils/streamingBufferRegistry';
+import type { StreamingBufferRegistry } from '@/modules/chat/utils/streamingBufferRegistry';
 import { getChatProviderLabel } from '@/modules/chat/utils/chatProviderLabel';
 import {
   useProcessingSessions,
@@ -80,8 +82,19 @@ function ChatInterface({
   } = useSessionProtectionActions();
 
   const sessionStore = useSessionStore();
-  const streamTimerRef = useRef<number | null>(null);
-  const accumulatedStreamRef = useRef('');
+  // Latest store handle for the streaming buffer's flush callback. Kept current
+  // in an effect so the callback never captures a stale `sessionStore` while
+  // the registry itself is created once for the pane's lifetime.
+  const sessionStoreRef = useRef(sessionStore);
+  useEffect(() => {
+    sessionStoreRef.current = sessionStore;
+  }, [sessionStore]);
+  // Session-keyed streaming buffer. The lazy initializer runs exactly once, so
+  // a single registry backs every render.
+  const [streamBuffers] = useState<StreamingBufferRegistry>(() =>
+    createStreamingBufferRegistry((sessionId, text, provider) => {
+      sessionStoreRef.current.updateStreaming(sessionId, text, provider);
+    }));
   // When each session's `chat.subscribe` was last sent; idle acks older than
   // a later local request are discarded as stale.
   const statusCheckSentAtRef = useRef(new Map<string, number>());
@@ -89,14 +102,6 @@ function ChatInterface({
   // on every sequenced frame, read whenever a `chat.subscribe` is sent so the
   // server replays only the events this client actually missed.
   const lastSeqRef = useRef(new Map<string, number>());
-
-  const resetStreamingState = useCallback(() => {
-    if (streamTimerRef.current) {
-      clearTimeout(streamTimerRef.current);
-      streamTimerRef.current = null;
-    }
-    accumulatedStreamRef.current = '';
-  }, []);
 
   const {
     provider,
@@ -166,7 +171,6 @@ function ChatInterface({
     newSessionTrigger,
     processingSessions,
     onSessionIdle,
-    resetStreamingState,
     statusCheckSentAtRef,
     lastSeqRef,
     sessionStore,
@@ -283,8 +287,7 @@ function ChatInterface({
     setTokenBudget,
     pendingPermissionRequests,
     setPendingPermissionRequests,
-    streamTimerRef,
-    accumulatedStreamRef,
+    streamBuffers,
     lastSeqRef,
     statusCheckSentAtRef,
     onSessionProcessing,
@@ -314,11 +317,12 @@ function ChatInterface({
     };
   }, [canAbortSession, handleAbortSession]);
 
-  useEffect(() => {
-    return () => {
-      resetStreamingState();
-    };
-  }, [resetStreamingState]);
+  // On unmount, cancel every pending flush so a timer cannot write into a
+  // torn-down store. Per-session buffers are otherwise dropped by
+  // `stream_end` / `complete`.
+  useEffect(() => () => {
+    streamBuffers.dropAll();
+  }, [streamBuffers]);
 
   /**
    * Branches the conversation into a new session that ends at this message,

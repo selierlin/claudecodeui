@@ -689,7 +689,10 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     if (raw.type === 'content_block_delta' && raw.delta?.text) {
       return [createNormalizedMessage({ kind: 'stream_delta', content: raw.delta.text, sessionId, provider: PROVIDER })];
     }
-    if (raw.type === 'content_block_stop') {
+    // `stream_end` marks the end of a reply, so it must fire once per assistant
+    // message: `message_stop`, not `content_block_stop` (which fires once per
+    // content block and would prematurely finalize multi-block replies).
+    if (raw.type === 'message_stop') {
       return [createNormalizedMessage({ kind: 'stream_end', sessionId, provider: PROVIDER })];
     }
 

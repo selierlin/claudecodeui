@@ -311,6 +311,13 @@ function mapCliOptionsToSDK(options = {}) {
     }
   }
 
+  // Emit token-level `stream_event` frames so the WebUI renders Claude replies
+  // incrementally instead of waiting for the whole assistant message. This is
+  // the default provider's default path, so CLAUDE_PARTIAL_MESSAGES=0 is kept
+  // as an operator escape hatch (see
+  // docs/research/claude-partial-streaming-plan.md §2.5).
+  sdkOptions.includePartialMessages = process.env.CLAUDE_PARTIAL_MESSAGES !== '0';
+
   return sdkOptions;
 }
 
@@ -384,11 +391,28 @@ function getAllSessions() {
  * @returns {Object} Transformed message ready for WebSocket
  */
 function transformMessage(sdkMessage) {
+  // `parent_tool_use_id` lives only on the SDK wrapper, never on the nested
+  // stream event. Read it before unwrapping so subagent filtering (which
+  // depends on this field) keeps working afterwards.
+  const parentToolUseId = sdkMessage?.parent_tool_use_id || null;
+
+  // Partial assistant messages arrive as `{ type: 'stream_event', event }`,
+  // but the adapter matches on the raw event's own `type` (content_block_*,
+  // message_stop, …). Unwrap the envelope here so it never reaches the shared
+  // normalizeMessageRows, keeping the history path untouched.
+  if (sdkMessage?.type === 'stream_event' && sdkMessage.event && typeof sdkMessage.event === 'object') {
+    const unwrapped = { ...sdkMessage.event };
+    if (parentToolUseId) {
+      unwrapped.parentToolUseId = parentToolUseId;
+    }
+    return unwrapped;
+  }
+
   // Extract parent_tool_use_id for subagent tool grouping
-  if (sdkMessage.parent_tool_use_id) {
+  if (parentToolUseId) {
     return {
       ...sdkMessage,
-      parentToolUseId: sdkMessage.parent_tool_use_id
+      parentToolUseId
     };
   }
   return sdkMessage;
@@ -406,6 +430,22 @@ function transformMessage(sdkMessage) {
  */
 export function isSubagentPromptEcho(message) {
   return Boolean(message?.parentToolUseId) && message.role === 'user' && message.kind === 'text';
+}
+
+/**
+ * True for a subagent's partial stream frames.
+ *
+ * They must not reach the main thread: a `stream_delta` would concatenate into
+ * the main reply's placeholder, and a `stream_end` would finalize that
+ * placeholder mid-flight. Full `tool_use` / `tool_result` frames are
+ * deliberately exempt — subagent grouping depends on them, and they are the
+ * only subagent traffic forwarded today.
+ * @param {Object} message - Normalized message about to be sent to the client
+ * @returns {boolean}
+ */
+export function isSubagentPartialEvent(message) {
+  return Boolean(message?.parentToolUseId)
+    && (message.kind === 'stream_delta' || message.kind === 'stream_end');
 }
 
 function readNumber(value) {
@@ -1006,6 +1046,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         if (isSubagentPromptEcho(msg)) {
           continue;
         }
+        // Subagent partial frames must stay out of the main thread (§2.3).
+        if (isSubagentPartialEvent(msg)) {
+          continue;
+        }
         ws.send(msg);
       }
 
@@ -1271,3 +1315,6 @@ export {
 
 // mapCliOptionsToSDK: exported for unit tests that verify SDK option mapping.
 export { mapCliOptionsToSDK };
+
+// transformMessage: exported for unit tests that verify stream_event unwrapping.
+export { transformMessage };
