@@ -280,16 +280,21 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
               /* Thinking messages — Reasoning component (ai-elements pattern).
                  A streaming reasoning row is left to open itself (Reasoning
                  falls back to `isStreaming`); settled rows stay collapsed and
-                 export opens everything. */
+                 export opens everything. The body uses StreamingMarkdown so a
+                 growing reasoning pass only re-parses its open tail, same as a
+                 reply — and the element type never changes across the
+                 streaming→settled switch, so the DOM is not rebuilt. */
               <Reasoning
                 defaultOpen={isExporting ? true : undefined}
                 isStreaming={Boolean(message.isStreaming)}
               >
                 <ReasoningTrigger />
                 <ReasoningContent lazyMount>
-                  <Markdown className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert">
-                    {message.content}
-                  </Markdown>
+                  <StreamingMarkdown
+                    content={String(message.content || '')}
+                    isStreaming={Boolean(message.isStreaming)}
+                    className="prose prose-sm prose-gray max-w-none font-serif dark:prose-invert"
+                  />
                   {!isExporting && (
                     <div className="mt-3 flex items-center text-[11px]">
                       <MessageCopyControl content={String(message.content || '')} messageType="assistant" />

@@ -196,6 +196,8 @@ A 与 B 仍不互斥：B 的指示器保留为「思考内容被 redacted / disp
 
 思考 delta 同样是一条带 `seq` 的实时帧，也走 replay 缓冲（5000 事件/run，完成后保留 5 分钟）。思考通常与正文**同量级甚至更长**，两者叠加会让帧数翻倍。这与 `claude-streaming-root-fix-plan.md` §4.3 是同一个问题，**且本方案会让它更严重**。若采纳服务端 delta 合并，应把思考通道一并纳入。
 
+> **已实现（2026-09-11）**：服务端已加 `createDeltaBatcher`（`claude-runtime.provider.js`）——同一 run 内同会话、同通道的连续 `stream_delta` 按 50ms 时间窗（或 2048 字符阈值）合并后再发，非 delta 帧前强制 flush 保序，run 收尾 dispose 丢弃残帧。所有出站帧（含 permission/status/complete/error）统一走 batcher，顺序由构造保证。§7-Q5 就此落实。
+
 ### 4.3 渲染量（中）
 
 本例思考 1639 字符、正文 3241 字符（被打断前），但比例随任务波动；thinking 的 token 速率与 text 同量级。10/s 的合并窗口（`streamingBufferRegistry.ts:7`）对两条通道各自生效，后台会话写频从 10/s 变成 20/s。仍在有界范围，但需在验收里观察长思考 + 长正文并发的表现。
@@ -289,7 +291,7 @@ both-blocks             → [{"k":"thinking","id":"UUID-B_0"},{"k":"text","id":"
 | Q2 | （A）流式期间自动展开思考面板吗？ | 展开，结束后 1s 自动收起——否则 A 的收益落空（§4.1） |
 | Q3 | 通道用什么机制：P1 复用 `stream_delta` + 字段 / P2 新 kind / P3 两个 registry？ | P1 |
 | Q4 | 路线 B 的进度指示是否受 `showThinking` 偏好控制？ | 不受控（只显示进度、不泄露内容）；内容行仍受控 |
-| Q5 | 思考 delta 是否也纳入服务端合并，以控制 replay 压力？ | 纳入。§8 实测：思考 delta 占总帧数 **58%（242/420）** 与 **3%（53/1600）**，比例随任务剧烈波动——最坏情形（思考主导）下不合并确实会先撞 5000 上限 |
+| Q5 | 思考 delta 是否也纳入服务端合并，以控制 replay 压力？ | ✅ **已实现（2026-09-11）**：纳入。`createDeltaBatcher` 对含思考通道在内的所有 `stream_delta` 按 50ms 窗口合并（§4.2）。§8 实测：思考 delta 占总帧数 **58%（242/420）** 与 **3%（53/1600）**，比例随任务剧烈波动——最坏情形（思考主导）下不合并确实会先撞 5000 上限 |
 | Q6 | 是否利用 `estimated_tokens` 显示「已思考 ~N tokens」？ | B 里可选增强；数据仅在 display=omitted 时存在，不能作为唯一信号 |
 
 ## 8. 前置实测结论（2026-09-11 完成）
