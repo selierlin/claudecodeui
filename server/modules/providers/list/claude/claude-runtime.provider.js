@@ -1076,6 +1076,16 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         // session_id already captured
       }
 
+      // A run held open for background work receives follow-up turns after the
+      // first turn's `complete` already went out. That complete closed the
+      // delta gate (`terminalSent`) so nothing could trail it, but a follow-up
+      // turn streams like any other: `message_start` opens its first assistant
+      // message, so re-open the gate here. Gated on the hold so an unheld run
+      // can never re-open it and leak a delta past its own complete.
+      if (heldForBackgroundWork && message.type === 'stream_event' && message.event?.type === 'message_start') {
+        terminalSent = false;
+      }
+
       if (streamStats) {
         const sdkType = typeof message.type === 'string' ? message.type : 'unknown';
         streamStats.sdkTypes[sdkType] = (streamStats.sdkTypes[sdkType] || 0) + 1;
@@ -1180,6 +1190,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
             sessionName: sessionSummary
           });
         }
+        // The turn is over again, so re-close the delta gate: only a held run's
+        // next follow-up `message_start` may re-open it. Applied after the
+        // `complete` above, whose flush must still carry the turn's final deltas.
+        terminalSent = true;
         if (backgroundWorkPending) {
           // Work started during this turn is still running. Hold the process
           // open so it can finish and report back in a follow-up turn; the
