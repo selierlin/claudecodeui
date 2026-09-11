@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { mock } from 'node:test';
 
 import { CLAUDE_PREDEFINED_MODELS } from '@/modules/providers/list/claude/claude-models.provider.js';
 import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import {
+  createDeltaBatcher,
   isSubagentPartialEvent,
   mapCliOptionsToSDK,
   transformMessage,
@@ -180,4 +181,95 @@ test('a text + tool_use message streams once and ends once', () => {
   assert.equal(deltas.length, 2);
   assert.equal(ends.length, 1);
   assert.equal(deltas.map((message) => message.content).join(''), 'Let me check.');
+});
+
+const NEVER_FLUSH = { intervalMs: 1e9, maxChars: 1e9 };
+
+function delta(text: string, streamChannel: 'text' | 'thinking') {
+  return { kind: 'stream_delta', content: text, sessionId: 's1', provider: 'claude', streamChannel };
+}
+
+test('createDeltaBatcher coalesces consecutive same-channel deltas', () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const batcher = createDeltaBatcher((message) => sent.push(message), NEVER_FLUSH);
+
+  batcher.send(delta('你', 'thinking'));
+  batcher.send(delta('好', 'thinking'));
+  assert.equal(sent.length, 0);
+
+  batcher.send({ kind: 'stream_end', sessionId: 's1', provider: 'claude' });
+  assert.equal(sent.length, 2);
+  assert.equal(sent[0].content, '你好');
+  assert.equal(sent[0].streamChannel, 'thinking');
+  // A non-delta frame always lands after the batch it flushed.
+  assert.equal(sent[1].kind, 'stream_end');
+});
+
+test('a channel change flushes the previous batch first', () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const batcher = createDeltaBatcher((message) => sent.push(message), NEVER_FLUSH);
+
+  batcher.send(delta('想', 'thinking'));
+  batcher.send(delta('答', 'text'));
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].content, '想');
+  assert.equal(sent[0].streamChannel, 'thinking');
+
+  batcher.flush();
+  assert.equal(sent.length, 2);
+  assert.equal(sent[1].content, '答');
+  assert.equal(sent[1].streamChannel, 'text');
+});
+
+test('the flushed frame keeps the base delta shape, only content grows', () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const batcher = createDeltaBatcher((message) => sent.push(message), NEVER_FLUSH);
+
+  batcher.send({ id: 'base-1', kind: 'stream_delta', content: 'a', sessionId: 's1', provider: 'claude', streamChannel: 'text' });
+  batcher.send(delta('b', 'text'));
+  batcher.flush();
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].id, 'base-1');
+  assert.equal(sent[0].content, 'ab');
+});
+
+test('maxChars flushes early without waiting for the interval', () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const batcher = createDeltaBatcher((message) => sent.push(message), { intervalMs: 1e9, maxChars: 4 });
+
+  batcher.send(delta('ab', 'text'));
+  assert.equal(sent.length, 0);
+  batcher.send(delta('cd', 'text'));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].content, 'abcd');
+});
+
+test('dispose discards a pending batch instead of flushing it', () => {
+  const sent: Array<Record<string, unknown>> = [];
+  const batcher = createDeltaBatcher((message) => sent.push(message), NEVER_FLUSH);
+
+  batcher.send(delta('dropped', 'text'));
+  batcher.dispose();
+  batcher.flush();
+
+  assert.equal(sent.length, 0);
+});
+
+test('an interval flush fires without an explicit flush call', () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const sent: Array<Record<string, unknown>> = [];
+    const batcher = createDeltaBatcher((message) => sent.push(message), { intervalMs: 50, maxChars: 1e9 });
+
+    batcher.send(delta('tick', 'text'));
+    assert.equal(sent.length, 0);
+
+    mock.timers.tick(51);
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].content, 'tick');
+  } finally {
+    mock.timers.reset();
+  }
 });

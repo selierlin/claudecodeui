@@ -452,6 +452,115 @@ export function isSubagentPartialEvent(message) {
     && (message.kind === 'stream_delta' || message.kind === 'stream_end');
 }
 
+/** Longest a buffered delta waits before it is flushed to the client. */
+const DELTA_COALESCE_INTERVAL_MS = 50;
+/** Flush early once this much text is held, so a fast stream stays responsive. */
+const DELTA_COALESCE_MAX_CHARS = 2048;
+
+/**
+ * Coalesces a run's consecutive same-channel `stream_delta` frames into
+ * periodic sends.
+ *
+ * The SDK emits one delta per token — 9177 of them in a single measured
+ * reasoning pass — and every forwarded frame becomes both a websocket send and
+ * an entry in the run's replay buffer (`MAX_BUFFERED_EVENTS_PER_RUN`, 5000). A
+ * long reasoning turn therefore truncated its own replay log. Batching on a
+ * short window divides both costs by the frame rate while adding at most
+ * `intervalMs` of latency, which the client's own 100ms render coalescing
+ * already hides.
+ *
+ * Ordering is preserved by flushing before anything that is not a delta: a
+ * delta must never land after the `stream_end` / full `thinking` / `complete`
+ * that follows it. A change of session, provider or channel flushes too, so two
+ * channels cannot merge into one frame.
+ *
+ * `dispose` deliberately discards rather than flushes: by the time a run tears
+ * down, either its terminal event has already flushed everything (normal and
+ * error paths send through the batcher), or the terminal event belongs to
+ * someone else — an abort or a superseding run — and a late flushed delta
+ * would only resurrect a row the client has already finalized.
+ *
+ * The first delta of a batch is kept as `base`, so the flushed frame carries
+ * the same id/timestamp/provider the adapter assigned rather than a
+ * reconstructed shape.
+ *
+ * @param {(message: *) => void} send - Sink for a flushed frame
+ * @param {Object} [options]
+ * @param {number} [options.intervalMs] - Longest a delta waits before flushing
+ * @param {number} [options.maxChars] - Flush early once this much text is held
+ * @returns {{ send: (message: *) => void, flush: () => void, dispose: () => void }}
+ */
+export function createDeltaBatcher(send, {
+  intervalMs = DELTA_COALESCE_INTERVAL_MS,
+  maxChars = DELTA_COALESCE_MAX_CHARS
+} = {}) {
+  let pending = null;
+  let timer = null;
+
+  const clearTimer = () => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+
+  const flush = () => {
+    clearTimer();
+    if (!pending) {
+      return;
+    }
+    const { base, text } = pending;
+    pending = null;
+    send({ ...base, content: text, streamChannel: base.streamChannel });
+  };
+
+  const sendOrBuffer = (message) => {
+    if (message?.kind !== 'stream_delta') {
+      flush();
+      send(message);
+      return;
+    }
+
+    const text = message.content || '';
+    if (!text) {
+      return;
+    }
+
+    if (
+      !pending
+      || pending.base.sessionId !== message.sessionId
+      || pending.base.provider !== message.provider
+      || pending.base.streamChannel !== message.streamChannel
+    ) {
+      flush();
+      pending = { base: message, text };
+    } else {
+      pending.text += text;
+    }
+
+    if (pending.text.length >= maxChars) {
+      flush();
+      return;
+    }
+
+    if (timer === null) {
+      timer = setTimeout(() => {
+        timer = null;
+        flush();
+      }, intervalMs);
+      // Never let a pending flush keep the process alive on its own.
+      timer.unref?.();
+    }
+  };
+
+  const dispose = () => {
+    clearTimer();
+    pending = null;
+  };
+
+  return { send: sendOrBuffer, flush, dispose };
+}
+
 function readNumber(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -799,11 +908,35 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       textDeltas: 0,
       thinkingDeltas: 0,
       subagentDrops: 0,
+      framesSent: 0,
       maxGapMs: 0,
       firstDeltaAt: null,
       lastDeltaAt: null
     }
     : null;
+
+  // Every outbound frame goes through the batcher so ordering is preserved by
+  // construction: a buffered delta is flushed before any non-delta frame, never
+  // after the `stream_end` / `complete` that would finalize its row.
+  let terminalSent = false;
+  const deltaBatcher = createDeltaBatcher((message) => {
+    if (message.kind === 'complete' || message.kind === 'error') {
+      terminalSent = true;
+    }
+    // A delta that surfaces after this run's terminal event (or after an abort
+    // was flagged) would resurrect the client's finalized placeholder row, so
+    // it is dropped instead of sent.
+    if (
+      message.kind === 'stream_delta'
+      && (terminalSent || (sessionKey() && abortedSessionIds.has(sessionKey())))
+    ) {
+      return;
+    }
+    if (streamStats) {
+      streamStats.framesSent += 1;
+    }
+    ws.send(message);
+  });
 
   // A new turn supersedes any earlier one still holding this session's process
   // open, so held runs cannot stack up across a conversation.
@@ -945,7 +1078,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       }
 
       const requestId = createRequestId();
-      ws.send(createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+      deltaBatcher.send(createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
       emitNotification(createNotificationEvent({
         provider: 'claude',
         sessionId: sessionId || capturedSessionId || null,
@@ -969,7 +1102,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
           _receivedAt: new Date(),
         },
         onCancel: (reason) => {
-          ws.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+          deltaBatcher.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
         }
       });
       if (!decision) {
@@ -985,7 +1118,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       // the inbound socket only, so without this a mid-run page refresh
       // replays the `permission_request` with nothing to retract it and the
       // already-answered prompt resurrects.
-      ws.send(createNormalizedMessage({ kind: 'permission_resolved', requestId, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+      deltaBatcher.send(createNormalizedMessage({ kind: 'permission_resolved', requestId, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
 
       if (decision.allow) {
         if (decision.rememberEntry && typeof decision.rememberEntry === 'string') {
@@ -1046,7 +1179,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         // Send session-created event only once for sessions with nothing to resume
         if (!providerSessionId && !sessionCreatedSent) {
           sessionCreatedSent = true;
-          ws.send(createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, sessionId: capturedSessionId, provider: 'claude' }));
+          deltaBatcher.send(createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, sessionId: capturedSessionId, provider: 'claude' }));
         }
       } else {
         // session_id already captured
@@ -1096,7 +1229,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
           }
           continue;
         }
-        ws.send(msg);
+        deltaBatcher.send(msg);
       }
 
       // Extract and send token budget updates from assistant usage payloads,
@@ -1108,7 +1241,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         if (message.type === 'assistant') {
           assistantBudgetSent = true;
         }
-        ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+        deltaBatcher.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
       }
 
       if (startsBackgroundWork(message)) {
@@ -1117,6 +1250,8 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
 
       if (message.type === 'result') {
         if (streamStats) {
+          // Flush first so framesSent reflects the run's final total.
+          deltaBatcher.flush();
           const deltaSpanMs = streamStats.firstDeltaAt !== null && streamStats.lastDeltaAt !== null
             ? streamStats.lastDeltaAt - streamStats.firstDeltaAt
             : 0;
@@ -1124,6 +1259,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
             sessionId: capturedSessionId || sessionId || null,
             textDeltas: streamStats.textDeltas,
             thinkingDeltas: streamStats.thinkingDeltas,
+            framesSent: streamStats.framesSent,
             subagentDrops: streamStats.subagentDrops,
             maxGapMs: streamStats.maxGapMs,
             deltaSpanMs,
@@ -1135,7 +1271,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
         const abortPending = sessionKey() ? abortedSessionIds.has(sessionKey()) : false;
         if (!turnCompleteSent && !abortPending) {
           turnCompleteSent = true;
-          ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
+          deltaBatcher.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
           notifyRunStopped({
             userId: ws?.userId || null,
             provider: 'claude',
@@ -1190,7 +1326,7 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     if (!turnCompleteSent && !superseded) {
       turnCompleteSent = true;
       if (!wasAborted) {
-        ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
+        deltaBatcher.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 0 }));
       }
       notifyRunStopped({
         userId: ws?.userId || null,
@@ -1233,9 +1369,9 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
     // Send error to WebSocket, then the terminal complete. A run that already
     // reported completion and then failed during its post-turn hold still
     // surfaces the error, but must not emit a second terminal complete.
-    ws.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
+    deltaBatcher.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
     if (!turnCompleteSent) {
-      ws.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 1 }));
+      deltaBatcher.send(createCompleteMessage({ provider: 'claude', sessionId: capturedSessionId || sessionId || null, exitCode: 1 }));
     }
     notifyRunFailed({
       userId: ws?.userId || null,
@@ -1245,6 +1381,10 @@ async function queryClaudeSDK(command, options = {}, ws, context) {
       error
     });
   } finally {
+    // Drop any delta still buffered when the run unwinds. Normal completion
+    // already flushed through the terminal `complete`; anything left belongs
+    // to an aborted or superseded run and must not be sent.
+    deltaBatcher.dispose();
     // Always close stdin — otherwise an aborted or failed run leaves the CLI
     // process (and its MCP servers) alive until the server exits.
     if (idleReleaseTimer) {
