@@ -513,6 +513,41 @@ export function createDeltaBatcher(
 }
 
 // ---------------------------
+//----------------- STREAMED CONTENT SUPPRESSION ------------
+/**
+ * Drops the assistant content blocks a runtime already published as
+ * `stream_delta` frames.
+ *
+ * A provider that streams thinking/reply text token-by-token still ends its
+ * turn with a full message carrying the same blocks. Forwarding both duplicates
+ * every row, so the Pi and WorkBuddy runtimes pass this helper the channels they
+ * streamed and send only the remaining blocks (tool calls and results). Blocks
+ * are matched by their `text` / `thinking` type, the shape both providers use.
+ *
+ * @param content - The assistant message's content array, if it has one.
+ * @param streamed - Which channels were streamed this message.
+ * @returns The blocks to forward on the terminal message; empty for non-arrays.
+ */
+export function omitStreamedAssistantBlocks(
+  content: unknown,
+  streamed: { text?: boolean; thinking?: boolean },
+): unknown[] {
+  if (!Array.isArray(content)) {
+    return [];
+  }
+  return content.filter((block) => {
+    const type = readObjectRecord(block)?.type;
+    if (type === 'text' && streamed.text) {
+      return false;
+    }
+    if (type === 'thinking' && streamed.thinking) {
+      return false;
+    }
+    return true;
+  });
+}
+
+// ---------------------------
 //----------------- SUBAGENT TIMELINE UTILITIES ------------
 /**
  * Longest tool output kept on one subagent activity.

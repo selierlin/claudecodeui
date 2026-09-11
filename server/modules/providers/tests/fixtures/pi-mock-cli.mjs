@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Mock of the Pi CLI in `--mode json -p` one-shot mode for runtime tests.
-// Behavior is selected by MOCK_MODE: success | error-message-exit0 |
+// Behavior is selected by MOCK_MODE: success | streaming | error-message-exit0 |
 // error-then-success | startup-error | no-trailing-newline | hang.
 // When PI_MOCK_ARGS_FILE is set, the full argv (excluding node/script) is
 // written there so tests can assert the spawn arguments precisely.
@@ -98,6 +98,43 @@ if (mode === 'hang') {
   });
   emit({ type: 'message_end', message: assistantMessage() });
   emitTail();
+} else if (mode === 'streaming') {
+  // Mirrors a real run: the user echo, then an assistant message whose thinking
+  // and reply arrive as token-level `message_update` deltas before the full
+  // `message_end` copy.
+  const full = assistantMessage();
+  const thinkingText = full.content[0].thinking;
+  const replyText = full.content[1].text;
+  const splitAt = Math.ceil(replyText.length / 2);
+  emit({ type: 'agent_start' });
+  emit({ type: 'turn_start' });
+  emit({ type: 'message_start', message: { role: 'user', content: prompt, timestamp: Date.now() } });
+  emit({ type: 'message_end', message: { role: 'user', content: prompt, timestamp: Date.now() } });
+  emit({ type: 'message_start', message: { role: 'assistant' } });
+  emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_start', contentIndex: 0 } });
+  emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: thinkingText } });
+  emit({ type: 'message_update', assistantMessageEvent: { type: 'thinking_end', contentIndex: 0, content: thinkingText } });
+  emit({ type: 'message_update', assistantMessageEvent: { type: 'text_start', contentIndex: 1 } });
+  emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 1, delta: replyText.slice(0, splitAt) } });
+  emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 1, delta: replyText.slice(splitAt) } });
+  emit({ type: 'message_update', assistantMessageEvent: { type: 'text_end', contentIndex: 1, content: replyText } });
+  emit({ type: 'message_end', message: full });
+  emitTail();
+} else if (mode === 'streaming-hang') {
+  // Streams deltas indefinitely so a test can abort mid-stream and verify a
+  // buffered/final delta cannot land after the terminal complete.
+  emit({ type: 'message_start', message: { role: 'assistant' } });
+  const emitDelta = () => emit({
+    type: 'message_update',
+    assistantMessageEvent: { type: 'text_delta', contentIndex: 1, delta: 'x' },
+  });
+  const timer = setInterval(emitDelta, 30);
+  process.on('SIGTERM', () => {
+    clearInterval(timer);
+    emitDelta();
+    setTimeout(() => process.exit(0), 300);
+  });
+  emitDelta();
 } else if (mode === 'startup-error') {
   process.stderr.write('Error: Unknown provider definitely-missing\n');
   process.exit(1);
@@ -121,6 +158,6 @@ if (mode === 'hang') {
   emitTail();
 }
 
-if (mode !== 'hang') {
+if (mode !== 'hang' && mode !== 'streaming-hang') {
   process.exit(0);
 }

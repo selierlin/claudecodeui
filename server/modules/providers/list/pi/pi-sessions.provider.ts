@@ -494,6 +494,35 @@ export class PiSessionsProvider implements IProviderSessions {
       return [];
     }
 
+    // Token-level live deltas: Pi's `message_update` wraps the assistant's
+    // incremental event, whose `delta` text belongs to the reply
+    // (`text_delta`) or the reasoning trace (`thinking_delta`). The channel
+    // travels with the frame so the client buffers them into separate rows.
+    if (entry.type === 'message_update') {
+      const update = readObjectRecord(entry.assistantMessageEvent);
+      const updateType = typeof update?.type === 'string' ? update.type : '';
+      const delta = typeof update?.delta === 'string' ? update.delta : '';
+      if (updateType === 'thinking_delta' && delta) {
+        return [createNormalizedMessage({
+          kind: 'stream_delta',
+          streamChannel: 'thinking',
+          content: delta,
+          sessionId,
+          provider: 'pi',
+        })];
+      }
+      if (updateType === 'text_delta' && delta) {
+        return [createNormalizedMessage({
+          kind: 'stream_delta',
+          streamChannel: 'text',
+          content: delta,
+          sessionId,
+          provider: 'pi',
+        })];
+      }
+      return [];
+    }
+
     // Accept either a message entry ({ type, id, timestamp, message }) or a
     // bare AgentMessage; the wrapper fields give stable history ids.
     const message = readObjectRecord(entry.message);

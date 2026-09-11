@@ -20,6 +20,7 @@ type Captured = {
   role?: string;
   provider?: string;
   content?: unknown;
+  streamChannel?: string;
   newSessionId?: string;
   exitCode?: number;
   aborted?: boolean;
@@ -59,7 +60,7 @@ function makeContext(
 
 function makeWriter(captured: Captured[]): ProviderRuntimeWriter {
   return {
-    send(message: { kind: string; id?: string; role?: string; provider?: string; content?: unknown; newSessionId?: string; exitCode?: number; aborted?: boolean }) {
+    send(message: { kind: string; id?: string; role?: string; provider?: string; content?: unknown; streamChannel?: string; newSessionId?: string; exitCode?: number; aborted?: boolean }) {
       captured.push(message);
     },
     userId: 1,
@@ -254,4 +255,70 @@ test('a timeout reaps the process and reports a failure', async () => {
   const complete = captured.find((entry) => entry.kind === 'complete');
   assert.equal(complete?.exitCode, 1);
   assert.ok(captured.some((entry) => entry.kind === 'error' && typeof entry.content === 'string' && entry.content.includes('timed out')));
+});
+
+test('streams thinking/reply deltas and suppresses the terminal full-message copy', async () => {
+  const captured: Captured[] = [];
+  process.env.PI_COMMAND = MOCK_CLI;
+  process.env.MOCK_MODE = 'streaming';
+
+  await piRuntime.run('hello', { sessionId: 'app-1', projectPath: process.cwd() }, makeWriter(captured), makeContext(new Map()));
+
+  const deltas = captured.filter((entry) => entry.kind === 'stream_delta');
+  const reply = deltas.filter((entry) => entry.streamChannel !== 'thinking').map((entry) => entry.content).join('');
+  const thinking = deltas.filter((entry) => entry.streamChannel === 'thinking').map((entry) => entry.content).join('');
+  assert.equal(reply, 'OK:hello');
+  assert.equal(thinking, 'mock thinking');
+
+  const streamEndIndex = captured.findIndex((entry) => entry.kind === 'stream_end');
+  assert.notEqual(streamEndIndex, -1, 'expected a stream_end to finalize the placeholder rows');
+  const lastDeltaIndex = captured.map((entry) => entry.kind).lastIndexOf('stream_delta');
+  assert.ok(lastDeltaIndex < streamEndIndex, 'every delta must precede stream_end');
+
+  // The full `message_end` copy must not re-emit the blocks that streamed.
+  const duplicated = captured
+    .slice(streamEndIndex + 1)
+    .filter((entry) => entry.kind === 'text' || entry.kind === 'thinking');
+  assert.deepEqual(duplicated, [], `unexpected duplicated content: ${JSON.stringify(duplicated)}`);
+
+  assert.equal(captured.find((entry) => entry.kind === 'complete')?.exitCode, 0);
+});
+
+// The regression depends on SIGTERM reaching the child and letting it emit one
+// last delta, which is POSIX-specific; Windows kill semantics would not.
+test('an abort drops a pi delta that arrives after the terminal complete', { skip: process.platform === 'win32' }, async () => {
+  const captured: Captured[] = [];
+  process.env.PI_COMMAND = MOCK_CLI;
+  process.env.MOCK_MODE = 'streaming-hang';
+
+  const runPromise = piRuntime.run(
+    'Long task',
+    { sessionId: 'app-1', projectPath: process.cwd() },
+    makeWriter(captured),
+    makeContext(new Map()),
+  );
+
+  const deadline = Date.now() + 5000;
+  while (!captured.some((entry) => entry.kind === 'stream_delta')) {
+    if (Date.now() > deadline) {
+      assert.fail('timed out waiting for the mock CLI to stream');
+    }
+    await sleep(20);
+  }
+
+  assert.equal(await piRuntime.abort('app-1'), true);
+  // `handleChatAbort` emits the terminal complete directly on the writer,
+  // bypassing the runtime's coalescer — reproduce that here.
+  captured.push({ kind: 'complete', provider: 'pi', aborted: true });
+
+  await runPromise;
+  // Outlast both the coalescer window (50ms) and the mock's 300ms linger.
+  await sleep(400);
+
+  const completeIndex = captured.findIndex((entry) => entry.kind === 'complete');
+  assert.notEqual(completeIndex, -1);
+  const lateDeltas = captured
+    .slice(completeIndex + 1)
+    .filter((entry) => entry.kind === 'stream_delta');
+  assert.deepEqual(lateDeltas, [], `unexpected delta after complete: ${JSON.stringify(lateDeltas)}`);
 });

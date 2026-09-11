@@ -7,8 +7,13 @@ import {
   resolveImageAbsolutePath,
 } from '@/shared/image-attachments.js';
 import type { IProviderRuntime } from '@/shared/interfaces.js';
-import type { AnyRecord } from '@/shared/types.js';
-import { createCompleteMessage, createNormalizedMessage } from '@/shared/utils.js';
+import type { AnyRecord, NormalizedMessage } from '@/shared/types.js';
+import {
+  createCompleteMessage,
+  createDeltaBatcher,
+  createNormalizedMessage,
+  omitStreamedAssistantBlocks,
+} from '@/shared/utils.js';
 
 import { getPiCommand } from './pi-auth.provider.js';
 import { redactPiDiagnosticText } from './pi-sessions.provider.js';
@@ -127,6 +132,39 @@ export const piRuntime: IProviderRuntime = {
       });
       activeProcesses.set(appSessionId, child);
 
+      // Pi streams the assistant reply and its reasoning trace as token-level
+      // `message_update` deltas. Coalesce them like the Claude/Cursor runtimes
+      // so a long reasoning pass cannot overrun this run's replay buffer;
+      // `send` is the only outbound path from here on.
+      //
+      // `streamHalted` becomes true once this run must publish nothing further:
+      // its terminal `complete` went out through the batcher, or the user
+      // aborted it (the abort handler emits that complete directly, bypassing
+      // this batcher, so `haltStream` arms the flag). A delta surfacing after
+      // that would resurrect the client's already-finalized placeholder row.
+      let streamHalted = false;
+      const deltaBatcher = createDeltaBatcher((message) => {
+        if (message.kind === 'complete') {
+          streamHalted = true;
+        }
+        if (message.kind === 'stream_delta' && streamHalted) {
+          return;
+        }
+        writer.send(message);
+      });
+      const send = (message: NormalizedMessage) => deltaBatcher.send(message);
+
+      // Which channels the current assistant message already streamed, so its
+      // terminal `message_end` copy is omitted instead of rendered twice.
+      let streamedText = false;
+      let streamedThinking = false;
+
+      type HaltableChild = ChildProcess & { haltStream?: () => void };
+      (child as HaltableChild).haltStream = () => {
+        streamHalted = true;
+        deltaBatcher.dispose();
+      };
+
       const sessionName = typeof options.sessionSummary === 'string'
         ? options.sessionSummary
         : undefined;
@@ -155,7 +193,7 @@ export const piRuntime: IProviderRuntime = {
           clearTimeout(forceKillTimer);
         }
         resolveRun();
-        writer.send(createCompleteMessage({
+        send(createCompleteMessage({
           provider: 'pi',
           sessionId: appSessionId,
           actualSessionId: capturedSessionId ?? undefined,
@@ -204,7 +242,7 @@ export const piRuntime: IProviderRuntime = {
           return;
         }
         pendingFinish = { exitCode: 1, error };
-        writer.send(createNormalizedMessage({
+        send(createNormalizedMessage({
           kind: 'error',
           provider: 'pi',
           sessionId: appSessionId,
@@ -247,7 +285,7 @@ export const piRuntime: IProviderRuntime = {
           return;
         }
         sessionCreatedSent = true;
-        writer.send(createNormalizedMessage({
+        send(createNormalizedMessage({
           kind: 'session_created',
           newSessionId: capturedSessionId,
           sessionId: appSessionId,
@@ -279,6 +317,33 @@ export const piRuntime: IProviderRuntime = {
           return;
         }
 
+        // A new message opens a fresh streaming window; clear the channels the
+        // previous assistant message recorded so its `message_end` copy is not
+        // falsely suppressed (or a fresh one missed).
+        if (event.type === 'message_start') {
+          streamedText = false;
+          streamedThinking = false;
+          return;
+        }
+
+        // Token-level deltas for the in-flight assistant message. Forwarding
+        // each one lets the WebUI render the reasoning trace and the reply as
+        // they arrive; tracking the channel marks the block as streamed so the
+        // terminal `message_end` does not repeat it.
+        if (event.type === 'message_update') {
+          for (const normalized of context.normalizeMessage(event, appSessionId)) {
+            if (normalized.kind === 'stream_delta') {
+              if (normalized.streamChannel === 'thinking') {
+                streamedThinking = true;
+              } else {
+                streamedText = true;
+              }
+            }
+            send(normalized);
+          }
+          return;
+        }
+
         if (event.type === 'message_end') {
           const message = event.message as AnyRecord | null;
           const role = message?.role;
@@ -298,8 +363,34 @@ export const piRuntime: IProviderRuntime = {
             // (Pi retries some failed turns), matching Codex's review note.
             pendingFinish = { exitCode: 0 };
           }
+
+          // Close the streamed rows before emitting anything else, then send
+          // only the blocks that were not streamed (tool calls/results) so the
+          // reply and reasoning are not rendered a second time.
+          if (role === 'assistant' && (streamedText || streamedThinking)) {
+            send(createNormalizedMessage({
+              kind: 'stream_end',
+              sessionId: appSessionId,
+              provider: 'pi',
+            }));
+            const terminalEvent: AnyRecord = {
+              ...event,
+              message: {
+                ...message,
+                content: omitStreamedAssistantBlocks(message?.content, {
+                  text: streamedText,
+                  thinking: streamedThinking,
+                }),
+              },
+            };
+            for (const normalized of context.normalizeMessage(terminalEvent, appSessionId)) {
+              send(normalized);
+            }
+            return;
+          }
+
           for (const normalized of context.normalizeMessage(event, appSessionId)) {
-            writer.send(normalized);
+            send(normalized);
           }
           return;
         }
@@ -313,12 +404,9 @@ export const piRuntime: IProviderRuntime = {
           return;
         }
 
-        // message_start/message_update/tool_execution_*/turn_* stream deltas
-        // that message_end supersedes — nothing to render incrementally yet.
+        // tool_execution_*/turn_* events carry no renderable text of their own.
         if (
-          event.type === 'message_start'
-          || event.type === 'message_update'
-          || event.type === 'tool_execution_start'
+          event.type === 'tool_execution_start'
           || event.type === 'tool_execution_update'
           || event.type === 'tool_execution_end'
           || event.type === 'turn_start'
@@ -388,7 +476,7 @@ export const piRuntime: IProviderRuntime = {
               sessionId: appSessionId,
               exitCode: code ?? 'unknown',
             });
-            writer.send(createNormalizedMessage({
+            send(createNormalizedMessage({
               kind: 'error',
               provider: 'pi',
               sessionId: appSessionId,
@@ -415,6 +503,10 @@ export const piRuntime: IProviderRuntime = {
       return false;
     }
     abortedSessionIds.add(sessionId);
+    // The abort handler sends the terminal complete on this run's behalf
+    // (bypassing the coalescer), so halt the stream first: a buffered delta
+    // must not land after that complete and resurrect the client's row.
+    (child as ChildProcess & { haltStream?: () => void }).haltStream?.();
     try {
       child.kill('SIGTERM');
     } catch {
