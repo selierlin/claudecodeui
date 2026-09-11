@@ -16,7 +16,7 @@ CloudCLI 目前支持 claude/codex/cursor/opencode/dsh/workbuddy 六个 Provider
 ## 已实测确认的 PI 事实（规划阶段用本机二进制验证过）
 
 - `pi --mode json -p "<prompt>"` stdout 逐行 JSON：**首行即 session header**（`{"type":"session","version":3,"id":"<uuid>","cwd":...}`），可立即提取 UUID 发 `session_created`
-- 实测事件词汇表：`agent_start/turn_start/message_start/message_update/message_end/turn_end/agent_end/agent_settled/tool_execution_{start,update,end}`；`message_update` 只含 delta，`message_end` 是权威完整消息
+- 实测事件词汇表：`agent_start/turn_start/message_start/message_update/message_end/turn_end/agent_end/agent_settled/tool_execution_{start,update,end}`；`message_update` 的 `assistantMessageEvent` 携带 token 级 delta（`thinking_delta`/`text_delta`），`message_end` 是权威完整消息
 - **pi 的退出码不可靠但非恒 0**（Codex 批注 1，已实测复核）：assistant `stopReason:"error"`（如 401）时进程 exit 0；但启动/参数解析错误非 0 退出（实测 `--provider definitely-missing` → `Error: Unknown provider` + exit 1）。runtime 必须同时处理：① `message_end(stopReason:"error")` + 进程 exit 0；② stdout 无终端事件 + close 非零；③ stderr 启动错误
 - 用户 prompt 会被 `message_end(role:user)` 回显 → 实时流须跳过
 - 会话文件：`~/.pi/agent/sessions/<cwd编码>/<ISO时间戳>_<UUID>.jsonl`；cwd 编码（与 PI 源码一致，session-manager.js:245）：`'--' + cwd.replace(/^[/\\]/, '').replace(/[/\\:]/g, '-') + '--'`（替换 `/`、`\`、`:` 三种字符）；header.id 与文件名 UUID 一致；env 覆盖：`PI_CODING_AGENT_SESSION_DIR` / `PI_CODING_AGENT_DIR`
@@ -103,7 +103,8 @@ CloudCLI 目前支持 claude/codex/cursor/opencode/dsh/workbuddy 六个 Provider
 | 首行 session header | 提取 UUID；新会话发 `session_created` |
 | `message_end`(assistant/toolResult) | normalize 后 writer.send；**跳过 role:user 回显** |
 | `message_end`(stopReason:error) | error 消息 + `pendingFinish={exitCode:1,error}`。**错误终态只能被「后续成功的 assistant `message_end`」清除**（兼容 pi retry），`agent_end`/`agent_settled` 不得清除（Codex 批注 2） |
-| `message_update` / `tool_execution_*` / `turn_*` / `agent_start` | 忽略（不做打字机，message_end 一次性渲染） |
+| `message_update` | token 级流式：`assistantMessageEvent.type` 为 `thinking_delta`/`text_delta` → `stream_delta`（`streamChannel` 区分思考/正文），经 delta batcher 50ms 窗口合并转发（长思考防 replay 缓冲上限）；跟踪通道标记已流式，`message_end` 终态时经 `omitStreamedAssistantBlocks` 抑制重复渲染 |
+| `tool_execution_*` / `turn_*` / `agent_start` | 忽略（无渲染文本，非流式帧） |
 | `agent_settled` / `agent_end` | 仅标记「运行结束」，不改变 pendingFinish 的错误终态；若无 error 则 `pendingFinish={exitCode:0}`；等进程 close 才 finish |
 | close 非零且 stdout 无任何终端事件 | 按 `pendingFinish={exitCode:closeCode, error:redact(stderr)}` 处理（启动/参数错误路径，Codex 批注 1） |
 | 未知 type | `console.warn` 跳过 |
@@ -300,3 +301,4 @@ npm run build   # 阶段 4 后
 ## 后续增强（已实现）
 
 - **pi 权限模式**（2026-09-10）：实测确认 pi 无 Claude 式权限模式（无逐次审批，工具自主执行）。给 pi 加了**真实的只读模式**：capabilities `permissionModes: ['default','readonly']`；runtime 对 `readonly` 映射 `--tools read,grep,find,ls`；前端 `PermissionMode` 联合加 `readonly`、ComposerPermissionMenu 支持 per-provider 文案覆盖（`codex.descriptions.pi.default` = "Pi 自动执行工具调用，无需逐次审批"）；i18n 补 `codex.modes/descriptions.readonly`。测试：pi-runtime.test.ts 加 readonly→--tools 断言（11/11）。
+- **pi token 级流式输出**（2026-09-11）：`message_update` 升级为流式（`assistantMessageEvent` 的 `thinking_delta`/`text_delta` → `stream_delta`，思考/正文双通道，§2.2 已同步）；经 delta batcher 50ms 窗口合并转发，`message_end` 终态用 `omitStreamedAssistantBlocks` 抑制已流式块。测试：pi-runtime.test.ts 加"streams thinking/reply deltas and suppresses the terminal full-message copy"与"abort 丢弃终态后迟到 delta"用例（13/13）。
