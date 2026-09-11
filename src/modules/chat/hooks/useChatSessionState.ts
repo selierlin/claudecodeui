@@ -974,7 +974,7 @@ export function useChatSessionState({
         }
       }, 50);
     }
-  }, [chatMessages.length, isActive, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
+  }, [chatMessages, isActive, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;

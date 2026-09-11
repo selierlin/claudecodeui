@@ -172,6 +172,38 @@ describe('deferred scroll-to-bottom', () => {
     );
   });
 
+  it('follows content growth inside the same message', async () => {
+    const messages = new Map<string, NormalizedMessage[]>([
+      [SESSION_A, [buildMessage(0, '2026-01-01T00:00:00.000Z')]],
+    ]);
+    const store = createStore(messages);
+    const { result, rerender } = await renderChatSessionState({
+      session: { id: SESSION_A } as ProjectSession,
+      store,
+    });
+
+    const container = createContainer(5000, 500);
+    (result.current.scrollContainerRef as { current: HTMLDivElement | null }).current = container.element;
+
+    // A streaming flush appends text to the row already on screen: the row
+    // count is unchanged, so a follow keyed on `length` would miss it. The
+    // store hands back a fresh array (new reference, same count), as
+    // `updateStreaming` does on every flush.
+    messages.set(SESSION_A, [
+      { ...buildMessage(0, '2026-01-01T00:00:00.000Z'), content: 'message 0 grown' },
+    ]);
+    act(() => {
+      rerender({ session: { id: SESSION_A } as ProjectSession });
+    });
+    container.writes.length = 0;
+
+    act(() => {
+      vi.advanceTimersByTime(200);
+    });
+
+    expect(container.writes).toContain(container.scrollHeight);
+  });
+
   it('still sticks to the bottom when the user has not scrolled away', async () => {
     const messages = new Map<string, NormalizedMessage[]>([
       [SESSION_A, [buildMessage(0, '2026-01-01T00:00:00.000Z')]],
